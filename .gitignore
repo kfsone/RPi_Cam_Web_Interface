@@ -2,10 +2,15 @@
 *~          # backup files
 
 # Generated text files
-install.txt
 config.txt
+
+# Log files
+cam.txt
 install.txt
+remove.txt
+installer.txt
 start.txt
+stop.txt
 update.txt
 
 # website config
