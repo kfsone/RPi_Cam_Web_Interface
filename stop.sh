@@ -30,21 +30,14 @@
 # Additions by btidey, miraaz, gigpi
 # Split up and refactored by Bob Tidey 
 
-#Debug enable next 3 lines
-exec 5> stop.txt
-BASH_XTRACEFD="5"
-set -x
 
+# Bootstrap
 cd $(dirname $(readlink -f $0))
+source lib/common.shfrag
+fn_enable_debug_log stop.txt
+fn_load_config false
 
-source ./config.txt
-
-fn_stop ()
-{ # This is function stop
-   sudo killall raspimjpeg 2>/dev/null
-   sudo killall php 2>/dev/null
-   sudo killall motion 2>/dev/null
-}
-
-#stop operation
+# Shutdown the service.
+fn_info "Stopping running services."
 fn_stop
+echo "OK"
