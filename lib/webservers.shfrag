@@ -1,0 +1,110 @@
+##############################################################################
+# This is as shell fragment: use 'source' (or .) to load it.
+#
+
+function fn_apache ()
+{
+    fn_info "Installing apache module requirements."
+
+    sudo apt-get install -y apache2 php5 php5-cli libapache2-mod-php5 \
+        gpac motion zip libav-tools gstreamer1.0-tools
+
+    aconf="etc/apache2/sites-available/raspicam.conf"
+    cp $aconf.1 $aconf
+    if [ -e "\/$aconf" ]; then
+       sudo rm "\/$aconf"
+    fi
+    if [ -e /etc/apache2/conf-available/other-vhosts-access-log.conf ]; then
+       aotherlog="/etc/apache2/conf-available/other-vhosts-access-log.conf"
+    else
+       aotherlog="/etc/apache2/conf.d/other-vhosts-access-log"
+    fi
+    tmpfile=$(tempfile)
+    sudo awk '/NameVirtualHost \*:/{c+=1}{if(c==1){sub("NameVirtualHost \*:.*","NameVirtualHost *:'$webport'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
+    sudo awk '/Listen/{c+=1}{if(c==1){sub("Listen.*","Listen '$webport'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
+    awk '/<VirtualHost \*:/{c+=1}{if(c==1){sub("<VirtualHost \*:.*","<VirtualHost *:'$webport'>",$0)};print}' $aconf > "$tmpfile" && sudo mv "$tmpfile" $aconf
+    sudo sed -i "s/<Directory\ \/var\/www\/.*/<Directory\ \/var\/www$rpicamdirEsc>/g" $aconf
+    if [ "$user" == "" ]; then
+        sudo sed -i "s/AllowOverride\ .*/AllowOverride None/g" $aconf
+    else
+        sudo htpasswd -b -B -c /usr/local/.htpasswd $user $webpasswd
+        sudo sed -i "s/AllowOverride\ .*/AllowOverride All/g" $aconf
+        if [ ! -e /var/www$rpicamdir/.htaccess ]; then
+            sudo bash -c "cat > /var/www$rpicamdir/.htaccess" << EOF
+AuthName "RPi Cam Web Interface Restricted Area"
+AuthType Basic
+AuthUserFile /usr/local/.htpasswd
+Require valid-user
+EOF
+            sudo chown -R www-data:www-data /var/www$rpicamdir/.htaccess
+        fi
+    fi
+    sudo mv $aconf /$aconf
+    if [ ! -e /etc/apache2/sites-enabled/raspicam.conf ]; then
+       sudo ln -sf /$aconf /etc/apache2/sites-enabled/raspicam.conf
+    fi
+    sudo sed -i 's/^CustomLog/#CustomLog/g' $aotherlog
+    sudo a2dissite 000-default.conf >/dev/null 2>&1
+    sudo service apache2 restart
+}
+
+function fn_nginx ()
+{
+    fn_info "Installing nginx module requirements."
+
+    sudo apt-get install -y nginx php5-fpm php5-cli php5-common php-apc \
+        apache2-utils gpac motion zip libav-tools gstreamer1.0-tools
+
+    aconf="etc/nginx/sites-available/rpicam"
+    cp -- $aconf.1 $aconf
+    if [ -e "\/$aconf" ]; then
+       sudo rm -- "\/$aconf"
+    fi
+    #uncomment next line if wishing to always access by http://ip as the root
+    #sudo sed -i "s:root /var/www;:root /var/www$rpicamdirEsc;:g" $aconf 
+    sudo mv /etc/nginx/sites-available/*default* etc/nginx/sites-available/ >/dev/null 2>&1
+
+    if [ "$user" == "" ]; then
+        sed -i "s/auth_basic\ .*/auth_basic \"Off\";/g" $aconf
+        sed -i "s/\ auth_basic_user_file/#auth_basic_user_file/g" $aconf
+    else
+        sudo htpasswd -b -B -c /usr/local/.htpasswd $user $webpasswd
+        sed -i "s/auth_basic\ .*/auth_basic \"Restricted\";/g" $aconf
+        sed -i "s/#auth_basic_user_file/\ auth_basic_user_file/g" $aconf
+    fi
+    sudo mv -- $aconf /$aconf
+    sudo chmod u=rw,og=r -- /$aconf
+    if [ ! -e /etc/nginx/sites-enabled/rpicam ]; then
+    sudo ln -sf /$aconf /etc/nginx/sites-enabled/rpicam
+    fi
+
+    # Update nginx main config file
+    sudo sed -i "s/worker_processes 4;/worker_processes 2;/g" /etc/nginx/nginx.conf
+    sudo sed -i "s/worker_connections 768;/worker_connections 128;/g" /etc/nginx/nginx.conf
+    sudo sed -i "s/gzip on;/gzip off;/g" /etc/nginx/nginx.conf
+    if [ "$NGINX_DISABLE_LOGGING" != "" ]; then
+       sudo sed -i "s:access_log /var/log/nginx/nginx/access.log;:access_log /dev/null;:g" /etc/nginx/nginx.conf
+    fi
+
+    # Configure php-apc
+    sudo sh -c "echo \"cgi.fix_pathinfo = 0;\" >> /etc/php5/fpm/php.ini"
+    sudo mkdir -- /etc/php5/conf.d >/dev/null 2>&1
+    sudo cp -- etc/php5/apc.ini /etc/php5/conf.d/20-apc.ini
+    sudo chmod u=rw,g=r -- /etc/php5/conf.d/20-apc.ini
+    sudo service nginx restart
+}
+
+function fn_lighttpd ()
+{
+    fn_info "Installing lighttpd module requirements."
+
+    sudo apt-get install -y lighttpd php5-cli php5-common php5-cgi php5 \
+        gpac motion zip libav-tools gstreamer1.0-tools
+
+    sudo lighty-enable-mod fastcgi-php
+    sudo sed -i "s/^server.document-root.*/server.document-root  = \"\/var\/www$rpicamdirEsc\"/g" /etc/lighttpd/lighttpd.conf
+    sudo sed -i "s/^server.port.*/server.port  = $webport/g" /etc/lighttpd/lighttpd.conf
+    #sudo service lighttpd restart  
+    sudo /etc/init.d/lighttpd force-reload
+}
+

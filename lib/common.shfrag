@@ -1,0 +1,381 @@
+##############################################################################
+# This is as shell fragment: use 'source' (or .) to load it.
+#
+
+
+##############################################################################
+#### VARIABLES
+##############################################################################
+
+
+# Get our version from config.php
+versionfile="./www/config.php"
+version="$(sed -ne 's:^.*APP_VERSION.*\(v[0-9\.]*\).*:\1:p' "${versionfile}")"
+backtitle="Copyright (c) 2015-2017, Bob Tidey. RPi Cam $version"
+
+
+# Tool to use for displaying dialogs, for example, you might want to
+# use 'whiptail' instead of 'dialog'.
+DIALOG="dialog"   # old default
+DIALOG_PKG="dialog"
+DIALOG_USE_COLORS="--colors"
+DIALOG_START_COLORS="\Zb\Z1"
+DIALOG_END_COLORS="\Zn"
+DIALOG_OPTIONS="--keep-tite"
+
+
+# Where config is stored.
+RASPICONFIG="/boot/config.txt"
+configfile="./config.txt"
+motionconf="/etc/motion/motion.conf"
+
+
+# Default config values
+rpicamdir="html"
+webserver="apache"
+webport="80"
+user=""
+webpasswd=""
+autostart="yes"
+jpglink="no"
+
+
+# Valid options for config questions
+optautost="(yes/no)"
+optservers="(apache/nginx/lighttpd)"
+optjpglink="(yes/no)"
+optuser="(blank=nologin)"
+
+
+# Terminal colors
+color_red="tput setaf 1"
+color_green="tput setaf 2"
+color_reset="tput sgr0"
+RED="$($color_red)"
+GREEN="$($color_green)"
+NORMAL="$($color_reset)"
+
+
+# Where we store our autostart config
+autostartfile="/etc/rc.local"
+RC_START="#START RASPIMJPEG SECTION"    # start of section marker
+RC_END="#END RASPIMJPEG SECTION"        # end of section marker
+
+
+##############################################################################
+#### FUNCTIONS
+##############################################################################
+
+
+##############################################################################
+# Enable logging to filename on descriptor 5.
+#
+# \param    filename     File to open on >5.
+#
+function fn_enable_debug_log()
+{
+    local filename="${1}"; shift
+
+    #Debug enable next 3 lines
+    exec 5>"${filename}"
+    BASH_XTRACEFD="5"
+    set -x
+}
+
+
+##############################################################################
+# Report a message as information (prefixed with '#(I)'). Each argument
+# is treated as a separate info line.
+#
+# \param    $*      Each argument is printed as a separate '#(I) ...' line.
+#
+function fn_info()
+{
+    for line in "${*}"; do
+        echo "$($color_green)#(I) ${line}$($color_reset)"
+    done
+}
+
+
+##############################################################################
+# Report a message on stderr and stdout and then exit the current script.
+#
+# \param    $*      [optional] any extra arguments are individually
+#                   printed as a line of red text to stderr.
+#
+function fn_abort()
+{
+    $color_red
+    echo -e>&2 '***************\n*** ABORTED ***\n***************'
+    for line in "${*}"; do
+        echo >&2 "ERROR: ${line}"
+    done
+    echo "An error occurred. Exiting..." >&2
+    $color_reset
+    exit 1
+}
+
+
+##############################################################################
+# Checks if a package is returned. If so, writes 'installed' to stdout.
+#
+# \param    pkg        Name of package to query.
+# \return              true if the package is installed, otherwise false
+#
+function is_installed()
+{
+    local pkg="${1}"; shift
+    local result=$(dpkg-query -W -f='${db:Status-Status}' "${pkg}" 2>/dev/null) 
+    if [ "${result}" = "installed" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+
+##############################################################################
+# Check if the '${DIALOG}' package is installed and attempt to install
+# it if not.
+#
+# \param   fail_on_absent   If true: Abort instead of attempt install.
+#
+function fn_require_dialog()
+{
+    local fail_on_absent="${1}"; shift
+
+    if is_installed "${DIALOG_PKG}"; then return 0; fi
+
+    if [ "${fail_on_absent}" eq "true" ]; then
+        fn_abort "Dialog package not installed."
+    fi
+
+    fn_info "Installing '${DIALOG}' package for interactive prompts."
+
+    sudo apt-get install -y "${DIALOG_PKG}" || fn_abort "Install failed."
+
+    # Check again, and abort if it is not present.
+    fn_require_dialog true
+}
+
+
+
+##############################################################################
+# Generate a new config file.
+#
+# \param   filename      [optional] Name of the file to generate.
+#                        Default: ${configfile}
+#
+function fn_generate_config()
+{
+    local filename="${1:-${configfile}}"; shift
+
+    if [ -z "${webport}" ]; then
+        fn_abort "Invalid (empty) web port".
+    fi
+
+    fn_info "Generating config file (${filename})."
+
+    # Create a clean temporary file.
+    local tmp_file="$(tempfile)" || fn_abort "Can't create temporary file."
+
+    # Make sure it goes away on exit.
+    trap "rm -f -- '${tmp_file}" EXIT
+
+    # Populate it with the current values.
+    cat >"${tmp_file}" <<EOL
+# *** Generated config file ***
+# RPICamera config file. Put any extra options in here."
+#
+
+rpicamdir="${rpicamdir}"
+webserver="${webserver}"
+webport="${webport}"
+user="${user}"
+webpasswd="${webpasswd}"
+autostart="${autostart}"
+jpglink="${jpglink}"
+EOL
+
+    # Make it 644.
+    chmod ug=rw,o=r -- "${tmp_file}" || fn_abort "Couldn't chmod ${filename}"
+
+    # Move it into place.
+    sudo mv -- "${tmp_file}" "${filename}" || \
+        fn_abort "Couldn't overwrite '${filename}'."
+
+    fn_debug_showfile "${configfile}"
+
+    # Cancel the trap.
+    trap - EXIT
+}
+
+
+##############################################################################
+# Load the config file, either generating a default if 'generate'
+# is 'true', otherwise abort with a "missing config" error.
+#
+# \param   generate      If 'true', config file will be generated,
+#                        if absent or any other value, config file required.
+#
+function fn_load_config
+{
+    local generate="${1}"; shift
+
+    # Check if the config file exists.
+    if [ ! -e "${configfile}" ]; then
+
+        # If 'generate' isn't true, missing file = failure.
+        if [ "${generate}" != "true" ]; then
+
+            fn_abort "Missing ${configfile}. Did you run install.sh?"
+        fi
+
+        fn_generate_config
+    fi
+
+    source "${configfile}"
+}
+
+
+##############################################################################
+# Call 'dialog' with normalized settings.
+#
+# \param   title        The title of the display,
+# \param   $*           Forwarded to the 'dialog' command,
+#
+function fn_dialog()
+{
+    local title="${1}"; shift
+
+    ${DIALOG} --title "${title}" --backtitle "${backtitle}" \
+        ${DIALOG_USE_COLORS} ${DIALOG_OPTIONS} \
+        "$@"
+}
+
+
+##############################################################################
+# Ask the user a yes/no question.
+#
+# \param   title        Title for the dialog box.
+# \param   question     The string to ask the user.
+#
+function fn_ask ()
+{
+    local title="${1}"; shift
+    local question="${*}"; shift
+    fn_dialog "$1" --yesno "${question}" 5 48
+}
+
+##############################################################################
+# Display feedback in a dialog box for the user.
+#
+# \param   duration     Seconds to display message for,
+# \param   title        Title of the message box,
+# \param   info         Message body,
+#
+function fn_feedback()
+{
+    local duration="${1}"; shift
+    local title="${1}"; shift
+    local info="${*}"; shift
+
+    # If the dialog package supports it, add colors.
+    local prettyinfo="${DIALOG_START_COLORS}${info}${DIALOG_END_COLORS}"
+
+    fn_dialog "${title}" --sleep "${duration}" --infobox "${prettyinfo}" 5 48
+}
+
+
+##############################################################################
+# Show the user the contents of a file if debugging is enabled.
+#
+# \param    filename    Path+name of file to show.
+#
+function fn_debug_showfile()
+{
+    local filename="${1}"; shift
+    if [ -n "${filename}" -a "${DEBUG}" == "yes" ]; then
+        fn_dialog "${filename} contains:" --textbox "${filename}" 22 70
+    fi
+}
+
+##############################################################################
+# Stop the service.
+#
+function fn_stop ()
+{
+    sudo killall raspimjpeg 2>/dev/null
+    sudo killall php 2>/dev/null
+    sudo killall motion 2>/dev/null
+}
+
+
+##############################################################################
+# Reboot the system.
+#
+function fn_start()
+{
+    fn_ask "Camera System" "Start the camera now?"
+    response=$?
+    case $response in
+        0) ./start.sh ;;
+        *) fn_feedback 2 \
+                'Action required!' \
+                'Manually run ./start.sh or reboot!'
+        ;;
+    esac
+}
+
+
+##############################################################################
+# Remove our configuration from the autostart system.
+#
+function fn_autostart_disable()
+{
+    # We use markers to determine where our changes to /etc/rc.local go.
+    sudo sed -i -e "/${RC_START}/,/${RC_END}/d" ${autostartfile}
+
+    # trim any blank lines this produces.
+    sudo sed -i -e :a -e '/^\n*$/{$d;N;};/\n$/ba' ${autostartfile}
+}
+
+
+##############################################################################
+# Remove our configuration from the autostart system.
+#
+function fn_autostart_enable()
+{
+    if [ -z $(grep '^exit 0' "${autostartfile}") ]; then
+        fn_abort "Cannot find 'exit 0' at end of ${autostartfile}"
+    fi
+
+    # Check we're not already enabled.
+    if [ -n $(grep -l "${RC_START}" "${autostartfile}") ]; then
+        fn_abort "Internal:" \
+            "tried to enable autostart without first disabling it." \
+            "To work around this:" \
+            "Remove the ${RC_START}...${RC_END} content in ${autostartfile}."
+    fi
+
+    tempfile=$(tempfile)
+    cat <<EOF >"${tempfile}"
+${RC_START}
+mkdir -p /dev/shm/mjpeg
+chown www-data:www-data /dev/shm/mjpeg
+chmod 777 /dev/shm/mjpeg
+sleep 4;su -c 'raspimjpeg > /dev/null 2>&1 &' www-data
+if [ -e /etc/debian_version ]; then
+    sleep 4;su -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
+else
+    sleep 4;su -s '/bin/bash' -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
+fi
+${RC_END}
+EOF
+
+    # Add our configuration prior to the 'exit 0' line in rc.local.
+    sudo sed -i -e "/^exit [ ]*0/r ${tempFile}" "${autostartfile}"
+
+    rm -f "${tempfile}"
+}
+
