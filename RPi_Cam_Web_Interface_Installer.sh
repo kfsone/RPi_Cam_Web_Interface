@@ -37,32 +37,24 @@
 #  accordingly, and must not include leading nor trailing / character.
 # Default upstream behaviour: RPICAMDIR="" (installs in /var/www/ or /var/www/html)
 
+# Bootstrap.
 cd $(dirname $(readlink -f $0))
+source lib/common.shfrag
+fn_enable_debug_log installer.txt
+fn_require_dialog
+fn_load_config
 
-if [ $(dpkg-query -W -f='${Status}' "dialog" 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
-  sudo apt-get install -y dialog
-fi
-
-# Terminal colors
-color_red="tput setaf 1"
-color_green="tput setaf 2"
-color_reset="tput sgr0"
-RED=$(tput setaf 1)
-GREEN=$(tput setaf 2)
-NORMAL=$(tput sgr0)
-
-RASPICONFIG=/boot/config.txt
 
 FN_WWWROOT_PORT()
 {
 PACKAGE=('nginx' 'apache2');
 for i in "${PACKAGE[@]}"
 do
-  if [ $(dpkg-query -W -f='${Status}' "$i" 2>/dev/null | grep -c "ok installed") -eq 1 ]; then
+  if is_installed "$i"; then
     WEBSERVER="$i"
     if [ "$WEBSERVER" == "nginx" ]; then
-      WWWROOT=$(sudo cat /etc/nginx/sites-enabled/default | grep "^	root" | cut -d " " -f2 | cut -d ";" -f1)
-      WEBPORT=$(sudo cat /etc/nginx/sites-available/default | grep "^	listen" | cut -d " " -f2 | head -1)
+      WWWROOT=$(sudo cat /etc/nginx/sites-enabled/default | grep "^ root" | cut -d " " -f2 | cut -d ";" -f1)
+      WEBPORT=$(sudo cat /etc/nginx/sites-available/default | grep "^   listen" | cut -d " " -f2 | head -1)
       INFO_NGINX="(Nginx installed)"
     fi
     if [ "$WEBSERVER" == "apache2" ]; then
@@ -82,7 +74,6 @@ FN_WWWROOT_PORT
 
 FN_INSTALLDIR()
 {
-source ./config.txt
 if [ "$RPICAMDIR" == "" ]; then
   INSTALLDIR="$WWWROOT"
 else
@@ -104,111 +95,98 @@ else
   #WWWROOT="/var/www"
 fi
 
-# -------------------------------- START/FUNCTIONS --------------------------------	
+# -------------------------------- START/FUNCTIONS -------------------------------- 
 FN_STOP ()
-{ # This is function stop
-        sudo killall raspimjpeg
-        sudo killall php
-        sudo killall motion
-        sudo service apache2 stop >dev/null 2>&1
-        sudo service nginx stop >dev/null 2>&1
-        dialog --title 'Stop message' --infobox 'Stopped.' 4 16 ; sleep 2
+{
+    fn_stop     # Call the common function
+    # Also stop the webservices.
+    sudo service apache2 stop >dev/null 2>&1
+    sudo service nginx stop >dev/null 2>&1
+
+    fn_feedback 2 "Stopped" "Services stopped."
 }
 
 FN_REBOOT ()
 { # This is function reboot system
-  dialog --title "You must reboot your system!" --backtitle "$backtitle" --yesno "Do you want to reboot now?" 5 33
-  response=$?
+    fn_ask "Reboot required" "Reboot the system now?"
+    response=$?
     case $response in
-      0) sudo reboot;;
-      1) dialog --title 'Reboot message' --colors --infobox "\Zb\Z1"'Pending system changes that require a reboot!' 4 28 ; sleep 2;;
-      255) dialog --title 'Reboot message' --colors --infobox "\Zb\Z1"'Pending system changes that require a reboot!' 4 28 ; sleep 2;;
+        0)
+            fn_info "Rebooting system"
+            fn_feedback 2 "Rebooting system" "System will now reboot."
+            sudo reboot
+            ;;
+        *)
+            fn_feedback 3 \
+                "Action required!" \
+                "Pending changes require a reboot to take effect."
+        ;;
     esac
-}
-
-FN_ABORT()
-{
-    $color_red; echo >&2 '
-***************
-*** ABORTED ***
-***************
-'
-    echo "An error occurred. Exiting..." >&2; $color_reset
-    exit 1
 }
 
 FN_RPICAMDIR ()
 { 
-  source ./config.txt
-  
-  tmpfile=$(mktemp)
-  dialog  --backtitle "$backtitle" --title "Default www-root is $WWWROOT" --cr-wrap --inputbox "\
+    tmpfile=$(tempfile)
+    fn_dialog "Default www-root is $WWWROOT" --cr-wrap --inputbox "
   Current install path is $WWWROOT/$RPICAMDIR
   Enter new install Subfolder if you like." 8 52 $RPICAMDIR 2>$tmpfile
-			
-  sel=$?
-			
-  RPICAMDIR=`cat $tmpfile`
-  case $sel in
-  0)
-    sudo sed -i "s/^RPICAMDIR=.*/RPICAMDIR=\"$RPICAMDIR\"/g" ./config.txt	
-  ;;
-  1) source ./config.txt ;;
-  255) source ./config.txt ;;
-  esac
 
-  dialog --title 'Install path' --infobox "Install path is set $WWWROOT/$RPICAMDIR" 4 48 ; sleep 3
-  sudo chmod 664 ./config.txt
+    sel=$?
+    IFS="\n" read -r RPICAMDIR <"${tmpfile}"
+    rm -f "${tmpfile}"
+    if [ "${sel}" == "0" ]; then
+        sudo sed -i "s/^RPICAMDIR=.*/RPICAMDIR=\"$RPICAMDIR\"/g" ${configfile}
+    fi
 
-  if [ "$DEBUG" == "yes" ]; then
-    dialog --title "FN_RPICAMDIR ./config.txt contains" --textbox ./config.txt 22 70
-  fi
+    fn_feedback 3 "Install path" "Install path is ${WWWROOT}/${RPICAMDIR}"
+    fn_set_configfile_perms
+
+    fn_load_config
+
+    if [ "$DEBUG" == "yes" ]; then
+        fn_debug_showfile "${configfile}"
+    fi
 }
 
 FN_APACHEPORT ()
 {
-  source ./config.txt
-		
-  if [ "$WEBPORT" == "" ]; then
-    WEBPORT=$(cat $APACHEDEFAULT | grep "<VirtualHost" | cut -d ":" -f2 | cut -d ">" -f1)
-    sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" ./config.txt
-  fi		
-		
-  tmpfile=$(mktemp)
-  dialog  --backtitle "$backtitle" --title "Current Apache web server port is $WEBPORT" --inputbox "Enter new port:" 8 40 $WEBPORT 2>$tmpfile
-			
-  sel=$?
-			
-  WEBPORT=`cat $tmpfile`
-  case $sel in
-  0)
-    sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" ./config.txt	
-  ;;
-  1) source ./config.txt ;;
-  255) source ./config.txt ;;
-  esac
-			
-  tmpfile=$(mktemp)
-  sudo awk '/NameVirtualHost \*:/{c+=1}{if(c==1){sub("NameVirtualHost \*:.*","NameVirtualHost *:'$WEBPORT'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
-  sudo awk '/Listen/{c+=1}{if(c==1){sub("Listen.*","Listen '$WEBPORT'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
-  sudo awk '/<VirtualHost \*:/{c+=1}{if(c==1){sub("<VirtualHost \*:.*","<VirtualHost *:'$WEBPORT'>",$0)};print}' $APACHEDEFAULT > "$tmpfile" && sudo mv "$tmpfile" $APACHEDEFAULT
-  if [ ! "$RPICAMDIR" == "" ]; then
-    if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
-    else
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
+    if [ "$WEBPORT" == "" ]; then
+        WEBPORT=$(cat $APACHEDEFAULT | grep "<VirtualHost" | cut -d ":" -f2 | cut -d ">" -f1)
+        sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" "${configfile}"
+    fi        
+
+    tmpfile=$(tempfile)
+    fn_dialog "Current Apache port is ${WEBPORT}"  \
+        --inputbox "Enter new port:" 8 40 "${WEBPORT}" 2>$tmpfile
+
+    sel=$?
+    IFS="\n" read -r WEBPORT <"${tmpfile}"
+    rm -f "${tmpfile}"
+    if [ "${sel}" == "0" ]; then
+        sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" "${configfile}"
     fi
-  else
+
+    tmpfile=$(mktemp)
+    sudo awk '/NameVirtualHost \*:/{c+=1}{if(c==1){sub("NameVirtualHost \*:.*","NameVirtualHost *:'$WEBPORT'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
+    sudo awk '/Listen/{c+=1}{if(c==1){sub("Listen.*","Listen '$WEBPORT'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
+    sudo awk '/<VirtualHost \*:/{c+=1}{if(c==1){sub("<VirtualHost \*:.*","<VirtualHost *:'$WEBPORT'>",$0)};print}' $APACHEDEFAULT > "$tmpfile" && sudo mv "$tmpfile" $APACHEDEFAULT
+    if [ ! "$RPICAMDIR" == "" ]; then
     if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" /etc/motion/motion.conf
+    sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     else
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" /etc/motion/motion.conf
+    sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     fi
-  fi
-  sudo chown motion:www-data /etc/motion/motion.conf
-  sudo chmod 664 /etc/motion/motion.conf
-  sudo service apache2 restart
-}
+    else
+    if [ "$WEBPORT" != "80" ]; then
+    sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" "${motionconf}"
+    else
+    sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" "${motionconf}"
+    fi
+    fi
+    sudo chown motion:www-data "${motionconf}"
+    sudo chmod 664 "${motionconf}"
+    sudo service apache2 restart
+    }
 
 FN_SECURE_APACHE_NO ()
 {
@@ -219,20 +197,20 @@ FN_SECURE_APACHE_NO ()
   if [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/default" ]; then
     tmpfile=$(mktemp)
     sudo awk '/AllowOverride/{c+=1}{if(c==2){sub("AllowOverride.*","AllowOverride None",$0)};print}' $APACHEDEFAULT > "$tmpfile" && sudo mv "$tmpfile" $APACHEDEFAULT
-  elif [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/000-default.conf" ]; then	
+  elif [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/000-default.conf" ]; then    
     tmpfile=$(mktemp)
     sudo awk '/AllowOverride/{c+=1}{if(c==3){sub("AllowOverride.*","AllowOverride None",$0)};print}' /etc/apache2/apache2.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/apache2.conf
   else
     echo "$(date '+%d-%b-%Y-%H-%M') Disable security is not possible in apache conf!" >> ./error.txt
-  fi	
-  #sudo awk '/netcam_userpass/{c+=1}{if(c==1){sub("^netcam_userpass.*","; netcam_userpass value",$0)};print}' /etc/motion/motion.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/motion/motion.conf
-  sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" /etc/motion/motion.conf
+  fi    
+  #sudo awk '/netcam_userpass/{c+=1}{if(c==1){sub("^netcam_userpass.*","; netcam_userpass value",$0)};print}' "${motionconf}" > "$tmpfile" && sudo mv "$tmpfile" "${motionconf}"
+  sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" "${motionconf}"
   sudo /etc/init.d/apache2 restart
 }
 
 FN_SECURE_APACHE ()
 { # This is function secure in config.txt file. Working only apache right now! GUI mode.
-source ./config.txt
+fn_load_config
 
 FN_SECURE_APACHE_YES ()
 {
@@ -250,9 +228,9 @@ FN_SECURE_APACHE_YES ()
   else
     echo "$(date '+%d-%b-%Y-%H-%M') Enable security is not possible in apache conf!" >> ./error.txt
   fi 
-  #sudo awk '/; netcam_userpass/{c+=1}{if(c==1){sub("; netcam_userpass.*","netcam_userpass '$user':'$passwd'",$0)};print}' /etc/motion/motion.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/motion/motion.conf
-  sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" /etc/motion/motion.conf		
-  sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$passwd/g" /etc/motion/motion.conf
+  #sudo awk '/; netcam_userpass/{c+=1}{if(c==1){sub("; netcam_userpass.*","netcam_userpass '$user':'$passwd'",$0)};print}' "${motionconf}" > "$tmpfile" && sudo mv "$tmpfile" "${motionconf}"
+  sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" "${motionconf}"        
+  sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$passwd/g" "${motionconf}"
   sudo htpasswd -b -c /usr/local/.htpasswd $user $passwd
   sudo /etc/init.d/apache2 restart
 }
@@ -274,7 +252,7 @@ exec 3>&1
 dialog                                         \
 --separate-widget $'\n'                        \
 --title "RPi Cam Apache Webserver Security"    \
---backtitle "$backtitle"					   \
+--backtitle "$backtitle"                       \
 --form ""                                      \
 0 0 0                                          \
 "Enable:(yes/no)" 1 1   "$security" 1 18 15 0  \
@@ -286,74 +264,66 @@ dialog                                         \
     read -r passwd
 
 if [[ ! "$security" == "" || ! "$user" == "" || ! "$passwd" == "" ]] ; then
-  sudo sed -i "s/^security=.*/security=\"$security\"/g" ./config.txt
-  sudo sed -i "s/^user=.*/user=\"$user\"/g" ./config.txt
-  sudo sed -i "s/^passwd=.*/passwd=\"$passwd\"/g" ./config.txt
+  sudo sed -i "s/^security=.*/security=\"$security\"/g" "${configfile}"
+  sudo sed -i "s/^user=.*/user=\"$user\"/g" "${configfile}"
+  sudo sed -i "s/^passwd=.*/passwd=\"$passwd\"/g" "${configfile}"
 fi
 }
 
 exec 3>&-
 
-source ./config.txt
+source "${configfile}"
 
 if [ ! "$security" == "yes" ]; then
   FN_SECURE_APACHE_NO
-  sudo sed -i "s/^security=.*/security=\"no\"/g" ./config.txt
+  sudo sed -i "s/^security=.*/security=\"no\"/g" "${configfile}"
 else
   FN_SECURE_APACHE_YES
 fi
 
-sudo chown motion:www-data /etc/motion/motion.conf
-sudo chmod 664 /etc/motion/motion.conf
-sudo chmod 664 ./config.txt
+sudo chown motion:www-data "${motionconf}"
+sudo chmod 664 "${motionconf}"
+sudo chmod 664 "${configfile}"
 sudo service apache2 restart
 
 if [ "$DEBUG" == "yes" ]; then
-  if [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/default" ]; then
-    dialog --title "FN_SECURE_APACHE $APACHEDEFAULT contains" --textbox $APACHEDEFAULT 22 70
-  elif [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/000-default.conf" ]; then
-    dialog --title "FN_SECURE_APACHE /etc/apache2/apache2.conf contains" --textbox /etc/apache2/apache2.conf 22 70    
-  else
-    echo "$(date '+%d-%b-%Y-%H-%M') Edit security is not possible in apache conf!"
-  fi
-  dialog --title "FN_SECURE_APACHE /etc/motion/motion.conf contains" --textbox /etc/motion/motion.conf 22 70
-  dialog --title "FN_SECURE_APACHE ./config.txt contains" --textbox ./config.txt 22 70
+    if [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/default" ]; then
+        fn_debug_showfile "${APACHEDEFAULT}"
+    elif [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/000-default.conf" ]; then
+        fn_debug_showfile "/etc/apache2/apache2.conf"
+    else
+        echo "$(date '+%d-%b-%Y-%H-%M') Edit security is not possible in apache conf!"
+    fi
+
+    fn_debug_showfile "${motionconf}"
+    fn_debug_showfile "${configfile}"
 fi
 }
-# -------------------------------- END/FUNCTIONS --------------------------------	
+# -------------------------------- END/FUNCTIONS --------------------------------   
 
 # AUTOSTART. We edit rc.local
 FN_AUTOSTART_DISABLE ()
 {
-  if ! grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
-    FN_CONFIGURE_MENU
-  elif grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
-    tmpfile=$(mktemp)
-    sudo sed '/#START/,/#END/d' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-    # Remove to growing plank lines.
-    sudo awk '!NF {if (++n <= 1) print; next}; {n=0;print}' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-    sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"no\"/g" ./config.txt
-			  
-    # Finally we set owners and permissions all files what we changed.
-    sudo chown root:root /etc/rc.local
-    sudo chmod 755 /etc/rc.local
-    sudo chmod 664 ./config.txt
-  fi	
-	
-  if [ "$DEBUG" == "yes" ]; then
-    dialog --title "FN_AUTOSTART_DISABLE /etc/rc.local contains" --textbox /etc/rc.local 22 70
-    dialog --title "FN_AUTOSTART_DISABLE ./config.txt contains" --textbox ./config.txt 22 70
-  fi
+    if ! grep -Fq "${RC_START}" "${autostartfile}"; then
+        FN_CONFIGURE_MENU
+    else; then
+        fn_autostart_disable
+    fi    
+
+    if [ "$DEBUG" == "yes" ]; then
+        fn_debug_showfile "${autostartfile}"
+        fn_debug_showfile "${configfile}"
+    fi
 }
 
 FN_AUTOSTART_ENABLE ()
 {
 FN_INSTALLDIR
-if grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
+if grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
   FN_CONFIGURE_MENU
-elif ! grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
-  sudo sed -i '/exit 0/d' /etc/rc.local
-sudo bash -c "cat >> /etc/rc.local" << EOF
+elif ! grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
+  sudo sed -i '/exit 0/d' ${autostartfile}
+sudo bash -c "cat >> ${autostartfile}" << EOF
 #START RASPIMJPEG SECTION
 mkdir -p /dev/shm/mjpeg
 chown www-data:www-data /dev/shm/mjpeg
@@ -368,40 +338,38 @@ fi
 
 exit 0
 EOF
-  sudo chmod 755 /etc/rc.local
+  sudo chmod 755 ${autostartfile}
 fi
 
-sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"yes\"/g" ./config.txt
-			  
+sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"yes\"/g" "${configfile}"
+
 # Finally we set owners and permissions all files what we changed.
-sudo chown root:root /etc/rc.local
-sudo chmod 755 /etc/rc.local
-sudo chmod 664 ./config.txt
-			  
-if [ "$DEBUG" == "yes" ]; then
-  dialog --title "FN_AUTOSTART_ENABLE /etc/rc.local contains" --textbox /etc/rc.local 22 70
-  dialog --title "FN_AUTOSTART_ENABLE ./config.txt contains" --textbox ./config.txt 22 70
-fi
+sudo chown root:root ${autostartfile}
+sudo chmod 755 ${autostartfile}
+sudo chmod 664 "${configfile}"
+
+fn_debug_showfile "${autostartfile}"
+fn_debug_showfile "${configfile}"
 }
 
 FN_AUTOSTART ()
-{	
-source ./config.txt
-		
+{   
+source "${configfile}"
+
 if [ "$AUTOSTART" == "" ]; then
-  if grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
-    sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"yes\"/g" ./config.txt
+  if grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
+    sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"yes\"/g" "${configfile}"
   else
-    sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"no\"/g" ./config.txt
+    sudo sed -i "s/^AUTOSTART.*/AUTOSTART=\"no\"/g" "${configfile}"
   fi
 fi
-			
-if grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
+
+if grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
   status="\Zb\Z2Enabled\Zn"
 else
   status="\Zb\Z1Disabled\Zn"
 fi
-		
+
 # We look is AUTOSTART manually set.
 if [[ "$AUTOSTART" == "yes" && "$status" == "Disabled" ]] ; then
   FN_AUTOSTART_ENABLE
@@ -422,22 +390,20 @@ else
       255) FN_CONFIGURE_MENU;;
 esac
 fi
-		
-if grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
+
+if grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
   dialog --title 'Autostart message' --colors --infobox 'Autostart \Zb\Z2Enabled.\Zn' 4 23 ; sleep 2
 else
   dialog --title 'Autostart message' --colors --infobox 'Autostart \Zb\Z1Disabled.\Zn' 4 23 ; sleep 2
 fi
-			
+
 # Finally we set owners and permissions all files what we changed.
-sudo chown root:root /etc/rc.local
-sudo chmod 755 /etc/rc.local
-sudo chmod 664 ./config.txt
-			
-if [ "$DEBUG" == "yes" ]; then
-  dialog --title "FN_AUTOSTART /etc/rc.local contains" --textbox /etc/rc.local 22 70
-  dialog --title "FN_AUTOSTART ./config.txt contains" --textbox ./config.txt 22 70
-fi
+sudo chown root:root ${autostartfile}
+sudo chmod 755 ${autostartfile}
+sudo chmod 664 "${configfile}"
+
+fn_debug_showfile "${autostartfile}"
+fb_debug_showfile "${configfile}"
 }
 
 FN_STORAGE ()
@@ -463,28 +429,28 @@ else
   echo "$(date '+%d-%b-%Y-%H-%M') ERROR! Storage Folder or Link missing!"
   exit
 fi
-  
+
   tmpfile=$(mktemp)
   dialog  --backtitle "$backtitle" --title "Media Storage Path" --colors --cr-wrap --inputbox "\
   \Zb\Zu Current storage path: \Zn \Zb\Z4 $CURRENT_STORAGE \Zn
   \Zb\Zu Enter new storage location if you like. \Zn" 8 52 $CURRENT_STORAGE 2>$tmpfile
-			
+
   sel=$?
-			
+
   STORAGE=`cat $tmpfile`
   case $sel in
   0)
-	if [ "$STORAGE" != "$CURRENT_STORAGE" ]; then
-	  # We make directory for new storage location
-	  sudo mkdir -p $STORAGE
-	  sudo chown -R www-data:www-data $STORAGE
-	  sudo unlink $WWWROOT/$RPICAMDIR/media
-	  sudo ln -s $STORAGE $WWWROOT/$RPICAMDIR/media
-	  sudo mv $CURRENT_STORAGE/* $STORAGE
-	fi
+    if [ "$STORAGE" != "$CURRENT_STORAGE" ]; then
+      # We make directory for new storage location
+      sudo mkdir -p $STORAGE
+      sudo chown -R www-data:www-data $STORAGE
+      sudo unlink $WWWROOT/$RPICAMDIR/media
+      sudo ln -s $STORAGE $WWWROOT/$RPICAMDIR/media
+      sudo mv $CURRENT_STORAGE/* $STORAGE
+    fi
   ;;
-  1) source ./config.txt ;;
-  255) source ./config.txt ;;
+  1) source "${configfile}" ;;
+  255) source "${configfile}" ;;
   esac
 
   dialog --title 'Storage path' --colors --infobox "\Zb\Zu Storage path is set \Zn \Zb\Z4 $STORAGE \Zn" 4 48 ; sleep 3
@@ -496,8 +462,8 @@ FN_APACHE_DEFAULT_INSTALL ()
 if ! sudo grep -Fq 'cam_pic.php' $APACHEDEFAULT; then
   if [ ! "$RPICAMDIR" == "" ]; then
     sudo sed -i "s/<Directory\ \/var\/www\/.*/<Directory\ \/var\/www\/$RPICAMDIR\/>/g" $APACHEDEFAULT
-  fi	
-  sudo sed -i '/CustomLog\ ${APACHE_LOG_DIR}\/access.log\ combined/i \	SetEnvIf\ Request_URI\ "\/cam_pic.php$|\/status_mjpeg.php$"\ dontlog' $APACHEDEFAULT
+  fi    
+  sudo sed -i '/CustomLog\ ${APACHE_LOG_DIR}\/access.log\ combined/i \  SetEnvIf\ Request_URI\ "\/cam_pic.php$|\/status_mjpeg.php$"\ dontlog' $APACHEDEFAULT
   sudo sed -i 's/CustomLog\ ${APACHE_LOG_DIR}\/access.log.*/CustomLog\ ${APACHE_LOG_DIR}\/access.log\ common\ env=!dontlog/g' $APACHEDEFAULT
 fi
 }
@@ -520,188 +486,185 @@ FN_MOTION ()
 strings=('netcam_url' 'on_event_start' 'on_event_end');
 for i in "${strings[@]}"
 do
-  sudo sed -i "s/^; "$i".*/"$i"/g" /etc/motion/motion.conf
+  sudo sed -i "s/^; "$i".*/"$i"/g" "${motionconf}"
 done
 
 # Disable rows
 strings=('process_id_file' 'videodevice');
 for i in "${strings[@]}"
 do
-  sudo sed -i "s/^"$i".*/; "$i"/g" /etc/motion/motion.conf
+  sudo sed -i "s/^"$i".*/; "$i"/g" "${motionconf}"
 done
 
 # Turn off
 strings=('output_pictures' 'ffmpeg_output_movies' 'ffmpeg_cap_new');
 for i in "${strings[@]}"
 do
-  sudo sed -i "s/^"$i".*/"$i" off/g" /etc/motion/motion.conf
+  sudo sed -i "s/^"$i".*/"$i" off/g" "${motionconf}"
 done
 
 if [ "$passwd" == "" ]; then
-   sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" /etc/motion/motion.conf		
+    sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" "${motionconf}"     
 else
-   sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" /etc/motion/motion.conf		
-   sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$passwd/g" /etc/motion/motion.conf		
+    sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" "${motionconf}"       
+    sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$passwd/g" "${motionconf}"       
 fi
 
 if [ "$RPICAMDIR" == "" ]; then
-   sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www\/html\/FIFO1/g" /etc/motion/motion.conf
-   sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www\/html\/FIFO1/g" /etc/motion/motion.conf
+    sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www\/html\/FIFO1/g" "${motionconf}"
+    sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www\/html\/FIFO1/g" "${motionconf}"
     if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" "${motionconf}"
     else
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" "${motionconf}"
     fi
 else
-   sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www\/html\/$RPICAMDIR\/FIFO1/g" /etc/motion/motion.conf
-   sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www\/html\/$RPICAMDIR\/FIFO1/g" /etc/motion/motion.conf
+    sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www\/html\/$RPICAMDIR\/FIFO1/g" "${motionconf}"
+    sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www\/html\/$RPICAMDIR\/FIFO1/g" "${motionconf}"
     if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     else
-      sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     fi
 fi
 
-  if [ ! "$RPICAMDIR" == "" ]; then
+if [ ! "$RPICAMDIR" == "" ]; then
     if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost:$WEBPORT\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     else
-      sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost\/$RPICAMDIR\/cam_pic.php/g" "${motionconf}"
     fi
-  else
+else
     if [ "$WEBPORT" != "80" ]; then
-      sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost:$WEBPORT\/cam_pic.php/g" "${motionconf}"
     else
-      sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" /etc/motion/motion.conf
+        sudo sed -i "s/^netcam_url\ http.*/netcam_url\ http:\/\/localhost\/cam_pic.php/g" "${motionconf}"
     fi
-  fi
+fi
 
-sudo sed -i "s/control_port.*/control_port 6642/g" /etc/motion/motion.conf
-sudo sed -i "s/^stream_port.*/stream_port 0/g" /etc/motion/motion.conf		
-sudo sed -i "s/^webcam_port.*/webcam_port 0/g" /etc/motion/motion.conf
-sudo sed -i "s/^event_gap 60/event_gap 3/g" /etc/motion/motion.conf
-sudo sed -i "s/control_html_output.*/control_html_output off/g" /etc/motion/motion.conf
+sudo sed -i "s/control_port.*/control_port 6642/g" "${motionconf}"
+sudo sed -i "s/^stream_port.*/stream_port 0/g" "${motionconf}"      
+sudo sed -i "s/^webcam_port.*/webcam_port 0/g" "${motionconf}"
+sudo sed -i "s/^event_gap 60/event_gap 3/g" "${motionconf}"
+sudo sed -i "s/control_html_output.*/control_html_output off/g" "${motionconf}"
 
-sudo chown motion:www-data /etc/motion/motion.conf
-sudo chmod 664 /etc/motion/motion.conf
+sudo chown motion:www-data "${motionconf}"
+sudo chmod 664 "${motionconf}"
 }
 
-        # -------------------------------- START/File locations --------------------------------
-        # List of files what We Back Up
-        ##########################################
-        #/etc/rc.local
-        #/etc/passwd
-        ##########################################
-        sudo mkdir -p ./Backup/Preinstall
+# -------------------------------- START/File locations --------------------------------
+# List of files what We Back Up
+##########################################
+#${autostartfile}
+#/etc/passwd
+##########################################
+sudo mkdir -p ./Backup/Preinstall
 
-        #/etc/rc.local
-        if [ -f "/etc/rc.local" ]; then
-           if [ ! -f ./Backup/Preinstall/etc/rc.local ]; then
-             sudo cp -p --parents /etc/rc.local ./Backup/Preinstall/
-           fi
-           echo "File /etc/rc.local ${GREEN}Exist.${NORMAL}" 
-        else
-           echo "$(date '+%d-%b-%Y-%H-%M') File /etc/rc.local does not exist!" >> ./error.txt
-           echo "File /etc/rc.local ${RED}does Not exist!${NORMAL}"
-        fi
+#${autostartfile}
+if [ -f "${autostartfile}" ]; then
+   if [ ! -f ./Backup/Preinstall${autostartfile} ]; then
+     sudo cp -p --parents ${autostartfile} ./Backup/Preinstall/
+   fi
+   echo "File ${autostartfile} ${GREEN}Exist.${NORMAL}" 
+else
+   echo "$(date '+%d-%b-%Y-%H-%M') File ${autostartfile} does not exist!" >> ./error.txt
+   echo "File ${autostartfile} ${RED}does Not exist!${NORMAL}"
+fi
 
-        #/etc/passwd
-        if [ -f "/etc/passwd" ]; then
-           if [ ! -f ./Backup/Preinstall/etc/passwd ]; then
-             sudo cp -p --parents /etc/passwd ./Backup/Preinstall/
-           fi
-	  echo "File /etc/passwd ${GREEN}Exist.${NORMAL}" 
-        else
-	  echo "$(date '+%d-%b-%Y-%H-%M') File /etc/passwd does not exist!" >> ./error.txt
-	  echo "File /etc/passwd ${RED}does Not exist!${NORMAL}"
-        fi
+#/etc/passwd
+if [ -f "/etc/passwd" ]; then
+   if [ ! -f ./Backup/Preinstall/etc/passwd ]; then
+        sudo cp -p --parents /etc/passwd ./Backup/Preinstall/
+   fi
+   echo "File /etc/passwd ${GREEN}Exist.${NORMAL}" 
+else
+    echo "$(date '+%d-%b-%Y-%H-%M') File /etc/passwd does not exist!" >> ./error.txt
+    echo "File /etc/passwd ${RED}does Not exist!${NORMAL}"
+fi
 
-	# -------------------------------- END/File locations --------------------------------
-		
-	# -------------------------------- START/config.txt --------------------------------
-	# Config options located in ./config.txt. In first run script makes that file for you.
-	if [ ! -e ./config.txt ]; then
-	  sudo echo "#This is config file for main installer. Put any extra options in here." > ./config.txt
-	  sudo echo "" >> ./config.txt
-	fi
+# -------------------------------- END/File locations --------------------------------
 
-	# We enable DEBUG installer script
-	if ! grep -Fq "DEBUG=" ./config.txt; then
-	  sudo echo "# Enable or disable DEBUG for installer script" >> ./config.txt
-	  sudo echo "DEBUG=\"no\"" >> ./config.txt
-	  sudo echo "" >> ./config.txt
-	fi
+# -------------------------------- START "${configfile}" --------------------------------
+# Config options located in "${configfile}". In first run script makes that file for you.
+if [ ! -e "${configfile}" ]; then
+    sudo echo "#This is config file for main installer. Put any extra options in here." > "${configfile}"
+    sudo echo "" >> "${configfile}"
+fi
 
-	# RPICAMDIR
-	if ! grep -Fq "RPICAMDIR=" ./config.txt; then
-	  sudo echo "# Rpicam install directory" >> ./config.txt
-	  sudo echo "RPICAMDIR=\"\"" >> ./config.txt
-	  sudo echo "" >> ./config.txt
-	fi
+# We enable DEBUG installer script
+if ! grep -Fq "DEBUG=" "${configfile}"; then
+    sudo echo "# Enable or disable DEBUG for installer script" >> "${configfile}"
+    sudo echo "DEBUG=\"no\"" >> "${configfile}"
+    sudo echo "" >> "${configfile}"
+fi
 
-	# AUTOSTART
-	if ! grep -Fq "AUTOSTART=" ./config.txt; then
-	  sudo echo "# Enable or disable AUTOSTART" >> ./config.txt
-	  sudo echo "AUTOSTART=\"\"" >> ./config.txt
-	  sudo echo "" >> ./config.txt
-	fi
+# RPICAMDIR
+if ! grep -Fq "RPICAMDIR=" "${configfile}"; then
+    sudo echo "# Rpicam install directory" >> "${configfile}"
+    sudo echo "RPICAMDIR=\"\"" >> "${configfile}"
+    sudo echo "" >> "${configfile}"
+fi
 
-	# SECURITY
-	if ! grep -Fq "security=" ./config.txt; then
-	  sudo echo "# Webserver security" >> ./config.txt
-	  sudo echo "security=\"no\"" >> ./config.txt
-	  sudo echo "user=\"\"" >> ./config.txt
-	  sudo echo "passwd=\"\"" >> ./config.txt
-	  sudo echo "" >> ./config.txt
-	fi
+# AUTOSTART
+if ! grep -Fq "AUTOSTART=" "${configfile}"; then
+    sudo echo "# Enable or disable AUTOSTART" >> "${configfile}"
+    sudo echo "AUTOSTART=\"\"" >> "${configfile}"
+    sudo echo "" >> "${configfile}"
+fi
 
-	sudo chmod 664 ./config.txt
-	source ./config.txt  
-	# -------------------------------- END/config.txt --------------------------------
+# SECURITY
+if ! grep -Fq "security=" "${configfile}"; then
+    sudo echo "# Webserver security" >> "${configfile}"
+    sudo echo "security=\"no\"" >> "${configfile}"
+    sudo echo "user=\"\"" >> "${configfile}"
+    sudo echo "passwd=\"\"" >> "${configfile}"
+    sudo echo "" >> "${configfile}"
+fi
+
+sudo chmod ug=rw,o=r "${configfile}"
+
+fn_load_config
+
+# -------------------------------- END "${configfile}" --------------------------------
 
 # Start and Stop without GUI mode.
 case "$1" in
-  start)
+    start)
         FN_STOP
         sudo mkdir -p /dev/shm/mjpeg
         sudo chown www-data:www-data /dev/shm/mjpeg
         sudo chmod 777 /dev/shm/mjpeg
         sleep 1;sudo su -c 'raspimjpeg > /dev/null &' www-data
         if [ -e /etc/debian_version ]; then
-          sleep 1;sudo su -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
+            sleep 1;sudo su -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
         else
-          sleep 1;sudo su -c '/bin/bash' -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
+            sleep 1;sudo su -c '/bin/bash' -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
         fi
 
-        dialog --title 'Start message' --infobox 'Started.' 4 16 ; sleep 2
-	exit
-        ;;
+        fn_feedback 2 "RPiCam" "Started."
+        exit
+    ;;
 
-  stop)
+    stop)
         FN_STOP
-	exit
-        ;;  
+        exit
+    ;;  
 esac
-
-# Version stuff moved out functions as we need it more when one time.
-versionfile="./www/config.php"
-version=$(cat $versionfile | grep "'APP_VERSION'" | cut -d "'" -f4)
-backtitle="Copyright (c) 2014, Silvan Melchior. RPi Cam $version"
 
 FN_MENU_INSTALLER ()
 {
 # We using only "raspimjpeg" right now, but we need extracted values for future development.
 process=('raspimjpeg' 'php' 'motion'); 
 for i in "${process[@]}"
-  do
+do
     ps cax | grep $i > /dev/null
     if [ $? -eq 0 ]; then
-      echo "process_$i="started"" >> tmp_status
+        echo "process_$i="started"" >> tmp_status
     else
-      echo "process_$i="stopped"" >> tmp_status
+        echo "process_$i="stopped"" >> tmp_status
     fi
 done
-  
+
 source ./tmp_status
 
 # Do not put values here! Its for reset variables after function reloaded.
@@ -709,12 +672,12 @@ stopped_rpicam=""
 started_rpicam=""
 
 if [ "$process_raspimjpeg" == "started" ] ; then
-  started_rpicam="(started)"
+    started_rpicam="(started)"
 else
-  stopped_rpicam="(stopped)"
+    stopped_rpicam="(stopped)"
 fi
-rm ./tmp_status	
-	
+rm ./tmp_status 
+
 cmd=(dialog --backtitle "$backtitle" --title "RPi Cam Web Interface Installer" --colors --menu "Select your option:$WEBSERVER" 13 76 16)
 
 options=("1 install" "\Zb\ZuInstall\Zn (\Zb\ZuApache\Zn web server based) \Zb\Z2$INFO_APACHE2\Zn"
@@ -736,7 +699,7 @@ do
         sudo apt-get install -y apache2 php5 php5-cli libapache2-mod-php5 gpac motion zip libav-tools usbmount
         sudo a2enmod authz_groupfile
         sudo service apache2 restart
-		
+
         # -------------------------------- START/File locations --------------------------------
         # List of files what We Back Up
         ##########################################
@@ -744,7 +707,7 @@ do
         #/etc/apache2/sites-available/000-default.conf
         #/etc/apache2/apache2.conf
         #/etc/apache2/ports.conf
-        #/etc/motion/motion.conf
+        #"${motionconf}"
         # Directories
         #/etc/apache2/conf.d
         #/etc/apache2/conf-available
@@ -787,15 +750,15 @@ do
           echo "$(date '+%d-%b-%Y-%H-%M') File /etc/apache2/ports.conf does not exist!" >> ./error.txt
           echo "File /etc/apache2/ports.conf ${RED}does Not exist!${NORMAL}"
         fi
-        #/etc/motion/motion.conf
-        if [ -f "/etc/motion/motion.conf" ]; then
-          if [ ! -f ./Backup/Preinstall/etc/motion/motion.conf ]; then
-            sudo cp -p --parents /etc/motion/motion.conf ./Backup/Preinstall/
+        #"${motionconf}"
+        if [ -f ""${motionconf}"" ]; then
+          if [ ! -f ./Backup/Preinstall"${motionconf}" ]; then
+            sudo cp -p --parents "${motionconf}" ./Backup/Preinstall/
           fi
-          echo "File /etc/motion/motion.conf ${GREEN}Exist.${NORMAL}" 
+          echo "File "${motionconf}" ${GREEN}Exist.${NORMAL}" 
         else
-          echo "$(date '+%d-%b-%Y-%H-%M') File /etc/motion/motion.conf does not exist!" >> ./error.txt
-          echo "File /etc/motion/motion.conf ${RED}does Not exist!${NORMAL}"
+          echo "$(date '+%d-%b-%Y-%H-%M') File "${motionconf}" does not exist!" >> ./error.txt
+          echo "File "${motionconf}" ${RED}does Not exist!${NORMAL}"
         fi
         # Directories
         #/etc/apache2/conf.d
@@ -811,34 +774,34 @@ do
           echo "Directory APACHELOG ${RED}does Not exist!${NORMAL}"
         fi
         # -------------------------------- END/File locations --------------------------------
-        # -------------------------------- START/config.txt --------------------------------
+        # -------------------------------- STAR"${configfile}" --------------------------------
         # WEBPORT
         #cat 000-default.conf | grep "<VirtualHost" | cut -d ":" -f2 | cut -d ">" -f1
-        if ! grep -Fq "WEBPORT=" ./config.txt; then
+        if ! grep -Fq "WEBPORT=" "${configfile}"; then
           WEBPORT=$(sudo cat $APACHEDEFAULT | grep "<VirtualHost" | cut -d ":" -f2 | cut -d ">" -f1)
-          sudo echo "# Web server port" >> ./config.txt
-          sudo echo "WEBPORT=\"$WEBPORT\"" >> ./config.txt
-          sudo echo "" >> ./config.txt
-	    fi
-	    if [ "$WEBPORT" == "" ]; then
+          sudo echo "# Web server port" >> "${configfile}"
+          sudo echo "WEBPORT=\"$WEBPORT\"" >> "${configfile}"
+          sudo echo "" >> "${configfile}"
+        fi
+        if [ "$WEBPORT" == "" ]; then
           WEBPORT=$(sudo cat $APACHEDEFAULT | grep "<VirtualHost" | cut -d ":" -f2 | cut -d ">" -f1)
-          sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" ./config.txt
-	    fi
-		
-	sudo chmod 664 ./config.txt
-	source ./config.txt 
-	# -------------------------------- END/config.txt --------------------------------
-	
-	# We need find wwwroot after apache2 installed
-	FN_WWWROOT_PORT
+          sudo sed -i "s/^WEBPORT=.*/WEBPORT=\"$WEBPORT\"/g" "${configfile}"
+        fi
+
+    sudo chmod 664 "${configfile}"
+    source "${configfile}" 
+    # -------------------------------- EN"${configfile}" --------------------------------
+
+    # We need find wwwroot after apache2 installed
+    FN_WWWROOT_PORT
         if [ "$WWWROOT" == "/var/www/html" ]; then
           sudo sed -i "s/^www-data:x.*/www-data:x:33:33:www-data:\/var\/www\/html:\/bin\/sh/g" /etc/passwd
         fi
-		
-	FN_RPICAMDIR
-		
-	FN_AUTOSTART_ENABLE
-		
+
+    FN_RPICAMDIR
+
+    FN_AUTOSTART_ENABLE
+
         sudo mkdir -p $WWWROOT/$RPICAMDIR/media
         sudo cp -r www/* $WWWROOT/$RPICAMDIR/
         if [ -e $WWWROOT/$RPICAMDIR/index.html ]; then
@@ -846,12 +809,12 @@ do
           sudo mv $WWWROOT/$RPICAMDIR/index.html $WWWROOT/$RPICAMDIR/index.html.bak
         fi
         sudo chown -R www-data:www-data $WWWROOT/$RPICAMDIR
-        
+
         if [ ! -e $WWWROOT/$RPICAMDIR/FIFO ]; then
           sudo mknod $WWWROOT/$RPICAMDIR/FIFO p
         fi
         sudo chmod 666 $WWWROOT/$RPICAMDIR/FIFO
-        
+
         if [ ! -e $WWWROOT/$RPICAMDIR/FIFO1 ]; then
           sudo mknod $WWWROOT/$RPICAMDIR/FIFO1 p
         fi
@@ -891,9 +854,9 @@ do
             sudo sed -e "s/www/www\/html/" etc/raspimjpeg/raspimjpeg.1 > etc/raspimjpeg/raspimjpeg
           else
             sudo sed -e "s/www/www\/html\/$RPICAMDIR/" etc/raspimjpeg/raspimjpeg.1 > etc/raspimjpeg/raspimjpeg
-          fi		
+          fi        
         fi
-		
+
         if [ `cat /proc/cmdline |awk -v RS=' ' -F= '/boardrev/ { print $2 }'` == "0x11" ]; then
           sudo sed -i "s/^camera_num 0/camera_num 1/g" etc/raspimjpeg/raspimjpeg
         fi
@@ -919,21 +882,21 @@ do
           sudo cp -r etc/motion/motion.conf /etc/motion/
         fi
         elif [ "$WWWROOT" == "/var/www/html" ]; then
-          FN_MOTION		
+          FN_MOTION     
         fi
         '
-		
+
         sudo usermod -a -G video www-data
         if [ -e $WWWROOT/$RPICAMDIR/uconfig ]; then
           sudo chown www-data:www-data $WWWROOT/$RPICAMDIR/uconfig
         fi
-        
+
         if [ ! "$RPICAMDIR" == "" ]; then
           sudo sed -i "s/www\//www\/$RPICAMDIR\//g" $WWWROOT/$RPICAMDIR/schedule.php
         fi
 
-        sudo chown motion:www-data /etc/motion/motion.conf
-        sudo chmod 664 /etc/motion/motion.conf
+        sudo chown motion:www-data "${motionconf}"
+        sudo chmod 664 "${motionconf}"
         sudo chown -R www-data:www-data $WWWROOT/$RPICAMDIR
 
         dialog --title 'Install message' --infobox 'Installer finished.' 4 25 ; sleep 2
@@ -945,11 +908,11 @@ do
         sudo killall raspimjpeg
         sudo apt-get install -y nginx php5-fpm php5-cli php5-common php-apc gpac motion zip libav-tools
 
-	# -------------------------------- START/File locations --------------------------------
-	# List of files what We Back Up
-	##########################################
-	#/etc/nginx/sites-available/default
-	##########################################
+    # -------------------------------- START/File locations --------------------------------
+    # List of files what We Back Up
+    ##########################################
+    #/etc/nginx/sites-available/default
+    ##########################################
         #/etc/nginx/sites-available/default
         if [ -f "/etc/nginx/sites-available/default" ]; then
            if [ ! -f ./Backup/Preinstall/etc/nginx/sites-available/default ]; then
@@ -960,13 +923,13 @@ do
            echo "$(date '+%d-%b-%Y-%H-%M') File etc/nginx/sites-available/default does not exist!" >> ./error.txt
            echo "File etc/nginx/sites-available/default ${RED}does Not exist!${NORMAL}"
         fi
-		
-	    FN_WWWROOT_PORT
-		
+
+        FN_WWWROOT_PORT
+
         if [ "$WWWROOT" == "/var/www/html" ]; then
           sudo sed -i "s/^www-data:x.*/www-data:x:33:33:www-data:\/var\/www\/html:\/bin\/sh/g" /etc/passwd
         fi
-		
+
         FN_RPICAMDIR
         sudo mkdir -p $WWWROOT/$RPICAMDIR/media
         sudo cp -r www/* $WWWROOT/$RPICAMDIR/
@@ -1061,12 +1024,12 @@ do
         if [ -e $WWWROOT/$RPICAMDIR/uconfig ]; then
           sudo chown www-data:www-data $WWWROOT/$RPICAMDIR/uconfig
         fi
-        
+
         if [ ! "$RPICAMDIR" == "" ]; then
           sudo sed -i "s/www\//www\/$RPICAMDIR\//g" $WWWROOT/$RPICAMDIR/schedule.php
         fi
-        sudo chown motion:www-data /etc/motion/motion.conf
-        sudo chmod 664 /etc/motion/motion.conf
+        sudo chown motion:www-data "${motionconf}"
+        sudo chmod 664 "${motionconf}"
         sudo chown -R www-data:www-data $WWWROOT/$RPICAMDIR
 
         dialog --title 'Install message' --infobox 'Installer finished.' 4 25 ; sleep 2
@@ -1077,18 +1040,18 @@ do
         FN_WWWROOT_PORT
         FN_CONFIGURE_MENU ()
         {
-	CAMERA=$(sudo cat $RASPICONFIG | grep "start_x" | cut -d "=" -f2)
-	if [ $CAMERA -eq 1 ]; then
-	  CAMSTATUS="\Zb\Z2(Enabled)"
-	elif [ $CAMERA -eq 0 ]; then
-	  CAMSTATUS="\Zb\Z1(Disabled)"
-	fi
-		
-        if grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
+    CAMERA=$(sudo cat $RASPICONFIG | grep "start_x" | cut -d "=" -f2)
+    if [ $CAMERA -eq 1 ]; then
+      CAMSTATUS="\Zb\Z2(Enabled)"
+    elif [ $CAMERA -eq 0 ]; then
+      CAMSTATUS="\Zb\Z1(Disabled)"
+    fi
+
+        if grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
           AUTOSTART="\Zb\Z2(Enabled)"
         else
           AUTOSTART="\Zb\Z1(Disabled)"
-        fi	
+        fi  
 
         if [ "$APACHEDEFAULT" == "/etc/apache2/sites-available/default" ]; then
           TMP_SECURITY=$(sudo awk '/AllowOverride/ {i++}i==2{print $2; exit}' $APACHEDEFAULT)
@@ -1102,7 +1065,7 @@ do
         else
           SECURITY="\Zb\Z1(ERROR!)"
         fi
-        	
+
         cmd=(dialog --backtitle "$backtitle" --title "RPi Cam Web Interface Configurator" --colors --menu "Select your option:" 16 76 16)
         options=(
             "1 update" "\Zb\ZuUpdate\Zn RPi Cam installer"
@@ -1121,7 +1084,7 @@ do
           do
             case $choice in
              update)
-                trap 'FN_ABORT' 0
+                trap 'fn_abort' 0
                 set -e
                 remote=$(
                     git ls-remote -h origin master |
@@ -1166,11 +1129,11 @@ do
                 dialog --title 'Apache web port message' --infobox "Apache web port: $webport." 4 23 ; sleep 2
                 FN_CONFIGURE_MENU
                 ;;
-			 autostart)
+             autostart)
                 FN_AUTOSTART
                 FN_CONFIGURE_MENU
                 ;;
-			 camera)
+             camera)
                 exec sudo ./cam.sh
              ;;
              storage)
@@ -1183,20 +1146,20 @@ do
                 {
                   BACKUPDIR="$(date '+%d-%b-%Y-%H-%M')"
                   sudo mkdir -p ./Backup/$BACKUPDIR
-                  sudo cp ./config.txt ./Backup/$BACKUPDIR
-                  sudo cp /etc/motion/motion.conf ./Backup/$BACKUPDIR
-                  sudo cp /etc/raspimjpeg ./Backup/$BACKUPDIR				
+                  sudo cp "${configfile}" ./Backup/$BACKUPDIR
+                  sudo cp "${motionconf}" ./Backup/$BACKUPDIR
+                  sudo cp /etc/raspimjpeg ./Backup/$BACKUPDIR               
                   if [ ! "$RPICAMDIR" == "" ]; then
                     sudo cp $WWWROOT/$RPICAMDIR/uconfig ./Backup/$BACKUPDIR
                   else
                     sudo cp $WWWROOT/uconfig ./Backup/$BACKUPDIR
                   fi
                 }
-				
+
                 FN_RESTORE () 
                 {
-                  sudo cp $ANSW/config.txt ./config.txt
-                  sudo cp $ANSW/motion.conf /etc/motion/motion.conf
+                  sudo cp $ANS"${configfile}" "${configfile}"
+                  sudo cp $ANSW/motion.conf "${motionconf}"
                   sudo cp $ANSW/raspimjpeg /etc/raspimjpeg
                   if [ ! "$RPICAMDIR" == "" ]; then
                     sudo cp $ANSW/uconfig $WWWROOT/$RPICAMDIR/uconfig
@@ -1204,7 +1167,7 @@ do
                     sudo cp $ANSW/uconfig $WWWROOT/uconfig
                   fi
                 }
-				
+
                 FN_REMOVE_BACKUP ()
                 {
                   let i=0
@@ -1225,7 +1188,7 @@ do
                     fi
                   fi
                 }
-				  
+
                 FN_RESTORE_BACKUP ()
                 {
                   let i=0
@@ -1247,7 +1210,7 @@ do
                     fi
                   fi
                 }
-				
+
                 FN_BACKUP_RESTORE_MENU ()
                 {
                   dialog --title "Backup or Restore message" \
@@ -1279,7 +1242,7 @@ do
                 }
                 FN_BACKUP_RESTORE_MENU
              ;;
-                
+
              debug)
                 FN_STOP
                 sudo mkdir -p /dev/shm/mjpeg
@@ -1293,7 +1256,7 @@ do
                 fi        
                 $color_red; echo "Started with debug"; $color_reset
              ;;
-			
+
             esac
             done
         else
@@ -1301,18 +1264,18 @@ do
         fi
         }
 
-	# This is trap if webserver not installed.
+    # This is trap if webserver not installed.
         TESTVAR="$WEBSERVER"
         VAR()
         {
         if [ ${TESTVAR[@]} ]; then
-	 FN_CONFIGURE_MENU
+     FN_CONFIGURE_MENU
         else
         dialog --title 'Install message' --colors --infobox 'Please \Zb\Z1Install\Zn Rpicam first!' 4 25 ; sleep 2
         FN_MENU_INSTALLER
         fi
         }
-        VAR		
+        VAR     
         ;;
 
   start)
@@ -1326,11 +1289,11 @@ do
         else
           sleep 1;sudo su -c '/bin/bash' -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
         fi
-        
+
         dialog --title 'Start message' --infobox 'Started.' 4 16 ; sleep 2
         FN_MENU_INSTALLER
         ;;
-        
+
   stop)
         FN_STOP
         FN_MENU_INSTALLER
@@ -1339,59 +1302,59 @@ do
   remove)
         FN_WWWROOT_PORT
         FN_STOP
- 
+
     FN_LIGHT ()
     {
       FN_INSTALLDIR
       # Trap. Security reason. If we not find installdir we abort and not start remove whole system!
       if [ "$INSTALLDIR" == "" ]; then
-	echo "$(date '+%d-%b-%Y-%H-%M') Install directory missing! Aborted!" >> ./error.txt
+    echo "$(date '+%d-%b-%Y-%H-%M') Install directory missing! Aborted!" >> ./error.txt
         echo "Install directory missing! ${RED}Aborted!${NORMAL}"
         FN_MENU_INSTALLER
       fi
-	  
+
       dialog --title "Backup media?" --backtitle "$backtitle" --yesno "Do you want backup media into you home directory?" 5 33
       response=$?
         case $response in
           0) # echo yes
-	    if [ ! -d ~/media ]; then
+        if [ ! -d ~/media ]; then
               mkdir ~/media
             fi
-	    sudo mv $INSTALLDIR/media ~/media
-	      ;;
+        sudo mv $INSTALLDIR/media ~/media
+          ;;
           1)
-	      ;;
+          ;;
           255) 
-	        dialog --title 'Backup media' --colors --infobox "\Zb\Z1"'media Remove aborted!' 4 28 ; sleep 1
-	        FN_MENU_INSTALLER
-	      ;;
-        esac		
-	
-	  if [ $(dpkg-query -W -f='${Status}' "apache2" 2>/dev/null | grep -c "ok installed") -eq 1 ]; then
-	    FN_APACHE_DEFAULT_REMOVE
-	    FN_SECURE_APACHE_NO
-	  fi
-	
-	  FN_AUTOSTART_DISABLE
-	
+            dialog --title 'Backup media' --colors --infobox "\Zb\Z1"'media Remove aborted!' 4 28 ; sleep 1
+            FN_MENU_INSTALLER
+          ;;
+        esac        
+
+      if [ $(dpkg-query -W -f='${Status}' "apache2" 2>/dev/null | grep -c "ok installed") -eq 1 ]; then
+        FN_APACHE_DEFAULT_REMOVE
+        FN_SECURE_APACHE_NO
+      fi
+
+      FN_AUTOSTART_DISABLE
+
           BACKUPDIR="$(date '+%d-%B-%Y-%H-%M')"
-	  sudo mkdir -p ./Backup/removed-$BACKUPDIR
-	  sudo cp ./config.txt ./Backup/removed-$BACKUPDIR
-	  sudo cp /etc/motion/motion.conf ./removed-$BACKUPDIR
-	  sudo cp /etc/raspimjpeg ./Backup/removed-$BACKUPDIR				
-	  sudo cp $INSTALLDIR/uconfig ./Backup/removed-$BACKUPDIR
-	
-	  sudo rm /etc/sudoers.d/RPI_Cam_Web_Interface
-	  sudo rm /usr/bin/raspimjpeg
-	  sudo rm /etc/raspimjpeg
-	  if [ ! "$RPICAMDIR" == "" ]; then
-	    sudo rm -r $WWWROOT/$RPICAMDIR
-	  else
-	    # Here needed think. If RPICAMDIR not set then removed all webserver content!
-	    sudo rm -r $INSTALLDIR/*
-	  fi
+      sudo mkdir -p ./Backup/removed-$BACKUPDIR
+      sudo cp "${configfile}" ./Backup/removed-$BACKUPDIR
+      sudo cp "${motionconf}" ./removed-$BACKUPDIR
+      sudo cp /etc/raspimjpeg ./Backup/removed-$BACKUPDIR               
+      sudo cp $INSTALLDIR/uconfig ./Backup/removed-$BACKUPDIR
+
+      sudo rm /etc/sudoers.d/RPI_Cam_Web_Interface
+      sudo rm /usr/bin/raspimjpeg
+      sudo rm /etc/raspimjpeg
+      if [ ! "$RPICAMDIR" == "" ]; then
+        sudo rm -r $WWWROOT/$RPICAMDIR
+      else
+        # Here needed think. If RPICAMDIR not set then removed all webserver content!
+        sudo rm -r $INSTALLDIR/*
+      fi
     }
- 
+
     FN_MEDIUM ()
     {
       package=('apache2' 'php5' 'libapache2-mod-php5' 'php5-cli' 'zip' 'nginx' 'php5-fpm' 'php5-common' 'php-apc' 'gpac motion' 'libav-tools'); 
@@ -1402,19 +1365,19 @@ do
       fi
       done
     }
-	
+
     FN_HARD ()
     {
       #Put here packages where config files also removed.
       package=('apache2' 'apache2-utils' 'nginx' 'nginx-common' 'nginx-full' 'motion' 'gpac motion'); 
-	    for i in "${package[@]}"
-	      do
-		   if [ $(dpkg-query -W -f='${Status}' "$i" 2>/dev/null | grep -c "ok installed") -eq 1 ]; then
-		    sudo apt-get remove --purge -y "$i" && sudo apt-get autoremove -y
-		   fi
-	    done
+        for i in "${package[@]}"
+          do
+           if [ $(dpkg-query -W -f='${Status}' "$i" 2>/dev/null | grep -c "ok installed") -eq 1 ]; then
+            sudo apt-get remove --purge -y "$i" && sudo apt-get autoremove -y
+           fi
+        done
     }
- 
+
     FN_UNINSTALL ()
     {
       dialog --title "Uninstall packages!"       \
@@ -1441,7 +1404,7 @@ do
         2) #echo "[Hard] key pressed."
           FN_LIGHT
           FN_HARD
-	  FN_MEDIUM
+      FN_MEDIUM
         ;;
         3) #echo "[Medium] key pressed."
           FN_LIGHT
