@@ -31,383 +31,247 @@
 # Additions by btidey, miraaz, gigpi
 # Rewritten and split up by Bob Tidey 
 
-#Debug enable next 3 lines
-exec 5> install.txt
-BASH_XTRACEFD="5"
-set -x
 
+# Bootstrap.
 cd $(dirname $(readlink -f $0))
+source lib/common.shfrag
+source ./lib/webservers.shfrag
+fn_enable_debug_log install.txt
+fn_require_dialog
+fn_load_config true  # Load or generate the config file.
 
-if [ $(dpkg-query -W -f='${Status}' "dialog" 2>/dev/null | grep -c "ok installed") -eq 0 ]; then
-  sudo apt-get install -y dialog
+rpicamdirold="${rpicamdir}"
+if [ -n "${rpicamdirold}" ]; then
+  rpicamdirold=/$rpicamdirold
 fi
 
-# Terminal colors
-color_red="tput setaf 1"
-color_green="tput setaf 2"
-color_reset="tput sgr0"
-
-# Version stuff moved out functions as we need it more when one time.
-versionfile="./www/config.php"
-version=$(cat $versionfile | grep "'APP_VERSION'" | cut -d "'" -f4)
-backtitle="Copyright (c) 2015, Bob Tidey. RPi Cam $version"
-jpglink="no"
-
-# Config options located in ./config.txt. In first run script makes that file for you.
-if [ ! -e ./config.txt ]; then
-      sudo echo "#This is config file for main installer. Put any extra options in here." > ./config.txt
-      sudo echo "rpicamdir=\"html\"" >> ./config.txt
-      sudo echo "webserver=\"apache\"" >> ./config.txt
-      sudo echo "webport=\"80\"" >> ./config.txt
-      sudo echo "user=\"\"" >> ./config.txt
-      sudo echo "webpasswd=\"\"" >> ./config.txt
-      sudo echo "autostart=\"yes\"" >> ./config.txt
-      sudo echo "jpglink=\"no\"" >> ./config.txt
-      sudo echo "" >> ./config.txt
-      sudo chmod 664 ./config.txt
-fi
-
-source ./config.txt
-rpicamdirold=$rpicamdir
-if [ ! "${rpicamdirold:0:1}" == "" ]; then
-   rpicamdirold=/$rpicamdirold
-fi
-
-
-#Allow for a quiet install
-rm exitfile.txt >/dev/null 2>&1
+# Allow for a quiet install
+rm -f exitfile.txt
 if [ $# -eq 0 ] || [ "$1" != "q" ]; then
-   exec 3>&1
-   dialog                                         \
-   --separate-widget $'\n'                        \
-   --title "Configuration Options"    \
-   --backtitle "$backtitle"					   \
-   --form ""                                      \
-   0 0 0                                          \
-   "Cam subfolder:"        1 1   "$rpicamdir"   1 32 15 0  \
-   "Autostart:(yes/no)"    2 1   "$autostart"   2 32 15 0  \
-   "Server:(apache/nginx/lighttpd)" 3 1   "$webserver"   3 32 15 0  \
-   "Webport:"              4 1   "$webport"     4 32 15 0  \
-   "User:(blank=nologin)"  5 1   "$user"        5 32 15 0  \
-   "Password:"             6 1   "$webpasswd"   6 32 15 0  \
-   "jpglink:(yes/no)"      7 1   "$jpglink"     7 32 15 0  \
-   2>&1 1>&3 | {
-      read -r rpicamdir
-      read -r autostart
-      read -r webserver
-      read -r webport
-      read -r user
-      read -r webpasswd
-	  read -r jpglink
-   if [ -n "$webport" ]; then
-      sudo echo "#This is edited config file for main installer. Put any extra options in here." > ./config.txt
-      sudo echo "rpicamdir=\"$rpicamdir\"" >> ./config.txt
-      sudo echo "webserver=\"$webserver\"" >> ./config.txt
-      sudo echo "webport=\"$webport\"" >> ./config.txt
-      sudo echo "user=\"$user\"" >> ./config.txt
-      sudo echo "webpasswd=\"$webpasswd\"" >> ./config.txt
-      sudo echo "autostart=\"$autostart\"" >> ./config.txt
-      sudo echo "jpglink=\"$jpglink\"" >> ./config.txt
-      sudo echo "" >> ./config.txt
-   else
-      echo "exit" > ./exitfile.txt
-   fi
-   }
-   exec 3>&-
 
-   if [ -e exitfile.txt ]; then
-      rm exitfile.txt
-      exit
-   fi
+    cfg_file=$(tempfile)
+    trap "rm -f ${cfg_file}" EXIT
+    exec 3>"${cfg_file}"
+    fn_dialog "RPiCam Configuration" \
+        --output-fd 3 \
+        --separate-widget $'\n'                                 \
+        --form ""                                               \
+        0 0 0                                                   \
+        "Cam subfolder:"        1 1   "$rpicamdir"   1 32 15 0  \
+        "Autostart:$optautost"  2 1   "$autostart"   2 32 15 0  \
+        "Server:$optservers"    3 1   "$webserver"   3 32 15 0  \
+        "Webport:"              4 1   "$webport"     4 32 15 0  \
+        "User:$optuser"         5 1   "$user"        5 32 15 0  \
+        "Password:"             6 1   "$webpasswd"   6 32 15 0  \
+        "jpglink:$optjpglink"   7 1   "$jpglink"     7 32 15 0  \
+    || fn_abort "Dialog cancelled."
+    exec 3>&-
 
-   source ./config.txt
+    exec 3<"${cfg_file}"
+    for var in rpicamdir autostart webserver webport user webpasswd jpglink
+    do
+        read -u 3 -r value
+        eval "${var}=\"${value}\""
+    done
+    exec 3<&-
+
+    if [ -z "${webport}" ]; then
+        fn_abort "Missing 'webport', can't proceeed."
+    fi
+
+    fn_info "rpicamdir=$rpicamdir, webport=$webport"
+
+    fn_generate_config
+
+    source "${configfile}"
 fi
 
-if [ ! "${rpicamdir:0:1}" == "" ]; then
-   rpicamdirEsc="\\/$rpicamdir"
-   rpicamdir=/$rpicamdir
+if [ -n "${rpicamdir}" ]; then
+    rpicamdirEsc="\\/$rpicamdir"
+    rpicamdir=/$rpicamdir
 else
-   rpicamdirEsc=""
+    rpicamdirEsc=""
 fi
 
-fn_stop ()
-{ # This is function stop
-        sudo killall raspimjpeg 2>/dev/null
-        sudo killall php 2>/dev/null
-        sudo killall motion 2>/dev/null
+
+# Helper function to configure motion detection.
+function fn_motion ()
+{
+    sudo sed -i "s/^; netcam_url.*/netcam_url/g" "${motionconf}"        
+    sudo sed -i "s/^netcam_url.*/netcam_url http:\/\/localhost:$webport$rpicamdirEsc\/cam_pic.php/g" "${motionconf}"        
+    if [ "$user" == "" ]; then
+       sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" "${motionconf}"     
+    else
+       sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" "${motionconf}"       
+       sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$webpasswd/g" "${motionconf}"        
+    fi
+    sudo sed -i "s/^; on_event_start.*/on_event_start/g" "${motionconf}"        
+    sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www$rpicamdirEsc\/FIFO1/g" "${motionconf}"        
+    sudo sed -i "s/^; on_event_end.*/on_event_end/g" "${motionconf}"        
+    sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www$rpicamdirEsc\/FIFO1/g" "${motionconf}"        
+    sudo sed -i "s/control_port.*/control_port 6642/g" "${motionconf}"      
+    sudo sed -i "s/control_html_output.*/control_html_output off/g" "${motionconf}"     
+    sudo sed -i "s/^output_pictures.*/output_pictures off/g" "${motionconf}"        
+    sudo sed -i "s/^ffmpeg_output_movies on/ffmpeg_output_movies off/g" "${motionconf}"     
+    sudo sed -i "s/^ffmpeg_cap_new on/ffmpeg_cap_new off/g" "${motionconf}"     
+    sudo sed -i "s/^stream_port.*/stream_port 0/g" "${motionconf}"      
+    sudo sed -i "s/^webcam_port.*/webcam_port 0/g" "${motionconf}"      
+    sudo sed -i "s/^process_id_file/; process_id_file/g" "${motionconf}"
+    sudo sed -i "s/^videodevice/; videodevice/g" "${motionconf}"
+    sudo sed -i "s/^event_gap 60/event_gap 3/g" "${motionconf}"
+    sudo chown motion:www-data -- "${motionconf}"
+    sudo chmod ug=rw,o=r -- "${motionconf}"
 }
 
-fn_reboot ()
-{ # This is function reboot system
-  dialog --title "Start camera system now" --backtitle "$backtitle" --yesno "Start now?" 5 33
-  response=$?
-    case $response in
-      0) ./start.sh;;
-      1) dialog --title 'Start or Reboot message' --colors --infobox "\Zb\Z1"'Manually run ./start.sh or reboot!' 4 28 ; sleep 2;;
-      255) dialog --title 'Start or Reboot message' --colors --infobox "\Zb\Z1"'Manually run ./start.sh or reboot!' 4 28 ; sleep 2;;
-    esac
-}
 
-
-fn_apache ()
+# Helper function to configure autostart.
+function fn_autostart ()
 {
-aconf="etc/apache2/sites-available/raspicam.conf"
-cp $aconf.1 $aconf
-if [ -e "\/$aconf" ]; then
-   sudo rm "\/$aconf"
-fi
-if [ -e /etc/apache2/conf-available/other-vhosts-access-log.conf ]; then
-   aotherlog="/etc/apache2/conf-available/other-vhosts-access-log.conf"
-else
-   aotherlog="/etc/apache2/conf.d/other-vhosts-access-log"
-fi
-tmpfile=$(mktemp)
-sudo awk '/NameVirtualHost \*:/{c+=1}{if(c==1){sub("NameVirtualHost \*:.*","NameVirtualHost *:'$webport'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
-sudo awk '/Listen/{c+=1}{if(c==1){sub("Listen.*","Listen '$webport'",$0)};print}' /etc/apache2/ports.conf > "$tmpfile" && sudo mv "$tmpfile" /etc/apache2/ports.conf
-awk '/<VirtualHost \*:/{c+=1}{if(c==1){sub("<VirtualHost \*:.*","<VirtualHost *:'$webport'>",$0)};print}' $aconf > "$tmpfile" && sudo mv "$tmpfile" $aconf
-sudo sed -i "s/<Directory\ \/var\/www\/.*/<Directory\ \/var\/www$rpicamdirEsc>/g" $aconf
-if [ "$user" == "" ]; then
-	sudo sed -i "s/AllowOverride\ .*/AllowOverride None/g" $aconf
-else
-   sudo htpasswd -b -B -c /usr/local/.htpasswd $user $webpasswd
-	sudo sed -i "s/AllowOverride\ .*/AllowOverride All/g" $aconf
-   if [ ! -e /var/www$rpicamdir/.htaccess ]; then
-      sudo bash -c "cat > /var/www$rpicamdir/.htaccess" << EOF
-AuthName "RPi Cam Web Interface Restricted Area"
-AuthType Basic
-AuthUserFile /usr/local/.htpasswd
-Require valid-user
-EOF
-      sudo chown -R www-data:www-data /var/www$rpicamdir/.htaccess
-   fi
-fi
-sudo mv $aconf /$aconf
-if [ ! -e /etc/apache2/sites-enabled/raspicam.conf ]; then
-   sudo ln -sf /$aconf /etc/apache2/sites-enabled/raspicam.conf
-fi
-sudo sed -i 's/^CustomLog/#CustomLog/g' $aotherlog
-sudo a2dissite 000-default.conf >/dev/null 2>&1
-sudo service apache2 restart
-}
+    # Always disable ourselves first.
+    fn_autostart_disable
 
-fn_nginx ()
-{
-aconf="etc/nginx/sites-available/rpicam"
-cp $aconf.1 $aconf
-if [ -e "\/$aconf" ]; then
-   sudo rm "\/$aconf"
-fi
-#uncomment next line if wishing to always access by http://ip as the root
-#sudo sed -i "s:root /var/www;:root /var/www$rpicamdirEsc;:g" $aconf 
-sudo mv /etc/nginx/sites-available/*default* etc/nginx/sites-available/ >/dev/null 2>&1
+    # If auto-start is enabled, add in our code.
+    if [ "$autostart" == "yes" ]; then
+        if [ -z "$(grep '^exit 0' "${autostartfile}")" ]; then
+            fn_abort "Cannot find 'exit 0' at end of ${autostartfile}"
+        fi
 
-if [ "$user" == "" ]; then
-   sed -i "s/auth_basic\ .*/auth_basic \"Off\";/g" $aconf
-   sed -i "s/\ auth_basic_user_file/#auth_basic_user_file/g" $aconf
-else
-   sudo htpasswd -b -B -c /usr/local/.htpasswd $user $webpasswd
-   sed -i "s/auth_basic\ .*/auth_basic \"Restricted\";/g" $aconf
-   sed -i "s/#auth_basic_user_file/\ auth_basic_user_file/g" $aconf
-fi
-sudo mv $aconf /$aconf
-sudo chmod 644 /$aconf
-if [ ! -e /etc/nginx/sites-enabled/rpicam ]; then
-   sudo ln -sf /$aconf /etc/nginx/sites-enabled/rpicam
-fi
-
-# Update nginx main config file
-sudo sed -i "s/worker_processes 4;/worker_processes 2;/g" /etc/nginx/nginx.conf
-sudo sed -i "s/worker_connections 768;/worker_connections 128;/g" /etc/nginx/nginx.conf
-sudo sed -i "s/gzip on;/gzip off;/g" /etc/nginx/nginx.conf
-if [ "$NGINX_DISABLE_LOGGING" != "" ]; then
-   sudo sed -i "s:access_log /var/log/nginx/nginx/access.log;:access_log /dev/null;:g" /etc/nginx/nginx.conf
-fi
-
-# Configure php-apc
-sudo sh -c "echo \"cgi.fix_pathinfo = 0;\" >> /etc/php5/fpm/php.ini"
-sudo mkdir /etc/php5/conf.d >/dev/null 2>&1
-sudo cp etc/php5/apc.ini /etc/php5/conf.d/20-apc.ini
-sudo chmod 644 /etc/php5/conf.d/20-apc.ini
-sudo service nginx restart
-}
-
-fn_lighttpd ()
-{
-sudo lighty-enable-mod fastcgi-php
-sudo sed -i "s/^server.document-root.*/server.document-root  = \"\/var\/www$rpicamdirEsc\"/g" /etc/lighttpd/lighttpd.conf
-sudo sed -i "s/^server.port.*/server.port  = $webport/g" /etc/lighttpd/lighttpd.conf
-#sudo service lighttpd restart  
-sudo /etc/init.d/lighttpd force-reload
- }
-
-fn_motion ()
-{
-sudo sed -i "s/^; netcam_url.*/netcam_url/g" /etc/motion/motion.conf		
-sudo sed -i "s/^netcam_url.*/netcam_url http:\/\/localhost:$webport$rpicamdirEsc\/cam_pic.php/g" /etc/motion/motion.conf		
-if [ "$user" == "" ]; then
-   sudo sed -i "s/^netcam_userpass.*/; netcam_userpass value/g" /etc/motion/motion.conf		
-else
-   sudo sed -i "s/^; netcam_userpass.*/netcam_userpass/g" /etc/motion/motion.conf		
-   sudo sed -i "s/^netcam_userpass.*/netcam_userpass $user:$webpasswd/g" /etc/motion/motion.conf		
-fi
-sudo sed -i "s/^; on_event_start.*/on_event_start/g" /etc/motion/motion.conf		
-sudo sed -i "s/^on_event_start.*/on_event_start echo -n \'1\' >\/var\/www$rpicamdirEsc\/FIFO1/g" /etc/motion/motion.conf		
-sudo sed -i "s/^; on_event_end.*/on_event_end/g" /etc/motion/motion.conf		
-sudo sed -i "s/^on_event_end.*/on_event_end echo -n \'0\' >\/var\/www$rpicamdirEsc\/FIFO1/g" /etc/motion/motion.conf		
-sudo sed -i "s/control_port.*/control_port 6642/g" /etc/motion/motion.conf		
-sudo sed -i "s/control_html_output.*/control_html_output off/g" /etc/motion/motion.conf		
-sudo sed -i "s/^output_pictures.*/output_pictures off/g" /etc/motion/motion.conf		
-sudo sed -i "s/^ffmpeg_output_movies on/ffmpeg_output_movies off/g" /etc/motion/motion.conf		
-sudo sed -i "s/^ffmpeg_cap_new on/ffmpeg_cap_new off/g" /etc/motion/motion.conf		
-sudo sed -i "s/^stream_port.*/stream_port 0/g" /etc/motion/motion.conf		
-sudo sed -i "s/^webcam_port.*/webcam_port 0/g" /etc/motion/motion.conf		
-sudo sed -i "s/^process_id_file/; process_id_file/g" /etc/motion/motion.conf
-sudo sed -i "s/^videodevice/; videodevice/g" /etc/motion/motion.conf
-sudo sed -i "s/^event_gap 60/event_gap 3/g" /etc/motion/motion.conf
-sudo chown motion:www-data /etc/motion/motion.conf
-sudo chmod 664 /etc/motion/motion.conf
-}
-
-fn_autostart ()
-{
-tmpfile=$(mktemp)
-sudo sed '/#START/,/#END/d' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-# Remove to growing plank lines.
-sudo awk '!NF {if (++n <= 1) print; next}; {n=0;print}' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-if [ "$autostart" == "yes" ]; then
-   if ! grep -Fq '#START RASPIMJPEG SECTION' /etc/rc.local; then
-      sudo sed -i '/exit 0/d' /etc/rc.local
-      sudo bash -c "cat >> /etc/rc.local" << EOF
-#START RASPIMJPEG SECTION
+        tempfile=$(tempfile)
+        cat <<EOF >"${tempfile}"
+${RC_START}
 mkdir -p /dev/shm/mjpeg
 chown www-data:www-data /dev/shm/mjpeg
 chmod 777 /dev/shm/mjpeg
 sleep 4;su -c 'raspimjpeg > /dev/null 2>&1 &' www-data
 if [ -e /etc/debian_version ]; then
-  sleep 4;su -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
+    sleep 4;su -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
 else
-  sleep 4;su -s '/bin/bash' -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
+    sleep 4;su -s '/bin/bash' -c 'php /var/www$rpicamdir/schedule.php > /dev/null 2>&1 &' www-data
 fi
-#END RASPIMJPEG SECTION
-
-exit 0
+${RC_END}
 EOF
-   else
-      tmpfile=$(mktemp)
-      sudo sed '/#START/,/#END/d' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-      # Remove to growing plank lines.
-      sudo awk '!NF {if (++n <= 1) print; next}; {n=0;print}' /etc/rc.local > "$tmpfile" && sudo mv "$tmpfile" /etc/rc.local
-   fi
 
-fi
-sudo chown root:root /etc/rc.local
-sudo chmod 755 /etc/rc.local
+        # Add our configuration prior to the 'exit 0' line in rc.local.
+        sudo sed -i -e "/^exit [ ]*0/r ${tempFile}" "${autostartfile}"
+
+        rm -f "${tempfile}"
+    fi
 }
 
-#Main install)
+
+##############################################################################
+### Main
+##############################################################################
+
+
+# Stop the service if it's currently running.
+fn_info "Stopping any running rpicam instance."
 fn_stop
 
 sudo mkdir -p /var/www$rpicamdir/media
-#move old material if changing from a different install folder
+
+# Move old material if changing from a different install folder
 if [ ! "$rpicamdir" == "$rpicamdirold" ]; then
-   if [ -e /var/www$rpicamdirold/index.php ]; then
-      sudo mv /var/www$rpicamdirold/* /var/www$rpicamdir
-   fi
+    fn_info "Moving old files to new install folder."
+
+    if [ -e /var/www$rpicamdirold/index.php ]; then
+        sudo mv /var/www$rpicamdirold/* /var/www$rpicamdir
+    fi
 fi
 
 sudo cp -r www/* /var/www$rpicamdir/
 if [ -e /var/www$rpicamdir/index.html ]; then
-   sudo rm /var/www$rpicamdir/index.html
+    sudo rm /var/www$rpicamdir/index.html
 fi
 
 if [ "$webserver" == "apache" ]; then
-   sudo apt-get install -y apache2 php5 php5-cli libapache2-mod-php5 gpac motion zip libav-tools gstreamer1.0-tools
-   fn_apache
+    fn_apache
 elif [ "$webserver" == "nginx" ]; then
-   sudo apt-get install -y nginx php5-fpm php5-cli php5-common php-apc apache2-utils gpac motion zip libav-tools gstreamer1.0-tools
-   fn_nginx
+    fn_nginx
 elif [ "$webserver" == "lighttpd" ]; then
-   sudo apt-get install -y  lighttpd php5-cli php5-common php5-cgi php5 gpac motion zip libav-tools gstreamer1.0-tools
-   fn_lighttpd
+    fn_lighttpd
 fi
 
-#Make sure user www-data has bash shell
+# Make sure user www-data has bash shell
 sudo sed -i "s/^www-data:x.*/www-data:x:33:33:www-data:\/var\/www:\/bin\/bash/g" /etc/passwd
 
 if [ ! -e /var/www$rpicamdir/FIFO ]; then
-   sudo mknod /var/www$rpicamdir/FIFO p
+    sudo mknod /var/www$rpicamdir/FIFO p
 fi
-sudo chmod 666 /var/www$rpicamdir/FIFO
+sudo chmod ugo=rw /var/www$rpicamdir/FIFO
 
 if [ ! -e /var/www$rpicamdir/FIFO11 ]; then
-   sudo mknod /var/www$rpicamdir/FIFO11 p
+    sudo mknod /var/www$rpicamdir/FIFO11 p
 fi
-sudo chmod 666 /var/www$rpicamdir/FIFO11
+sudo chmod ugo=rw /var/www$rpicamdir/FIFO11
 
 if [ ! -e /var/www$rpicamdir/FIFO1 ]; then
-   sudo mknod /var/www$rpicamdir/FIFO1 p
+    sudo mknod /var/www$rpicamdir/FIFO1 p
 fi
 
-sudo chmod 666 /var/www$rpicamdir/FIFO1
-sudo chmod 755 /var/www$rpicamdir/raspizip.sh
+sudo chmod ugo=rw /var/www$rpicamdir/FIFO1
+sudo chmod u=rwx,go=rx /var/www$rpicamdir/raspizip.sh
 
 if [ ! -d /dev/shm/mjpeg ]; then
-   mkdir /dev/shm/mjpeg
+    mkdir /dev/shm/mjpeg
 fi
 
 if [ "$jpglink" == "yes" ]; then
-	if [ ! -e /var/www$rpicamdir/cam.jpg ]; then
-	   sudo ln -sf /dev/shm/mjpeg/cam.jpg /var/www$rpicamdir/cam.jpg
-	fi
+    if [ ! -e /var/www$rpicamdir/cam.jpg ]; then
+       sudo ln -sf /dev/shm/mjpeg/cam.jpg /var/www$rpicamdir/cam.jpg
+    fi
 fi
 
 if [ -e /var/www$rpicamdir/status_mjpeg.txt ]; then
-   sudo rm /var/www$rpicamdir/status_mjpeg.txt
+    sudo rm /var/www$rpicamdir/status_mjpeg.txt
 fi
 if [ ! -e /dev/shm/mjpeg/status_mjpeg.txt ]; then
-   echo -n 'halted' > /dev/shm/mjpeg/status_mjpeg.txt
+    echo -n 'halted' > /dev/shm/mjpeg/status_mjpeg.txt
 fi
 sudo chown www-data:www-data /dev/shm/mjpeg/status_mjpeg.txt
 sudo ln -sf /dev/shm/mjpeg/status_mjpeg.txt /var/www$rpicamdir/status_mjpeg.txt
 
 sudo chown -R www-data:www-data /var/www$rpicamdir
 sudo cp etc/sudoers.d/RPI_Cam_Web_Interface /etc/sudoers.d/
-sudo chmod 440 /etc/sudoers.d/RPI_Cam_Web_Interface
+sudo chmod ug=r /etc/sudoers.d/RPI_Cam_Web_Interface
 
 sudo cp -r bin/raspimjpeg /opt/vc/bin/
-sudo chmod 755 /opt/vc/bin/raspimjpeg
+sudo chmod u=rwx,go=rx /opt/vc/bin/raspimjpeg
 if [ ! -e /usr/bin/raspimjpeg ]; then
-   sudo ln -s /opt/vc/bin/raspimjpeg /usr/bin/raspimjpeg
+    sudo ln -s /opt/vc/bin/raspimjpeg /usr/bin/raspimjpeg
 fi
 
 sed -e "s/www/www$rpicamdirEsc/" etc/raspimjpeg/raspimjpeg.1 > etc/raspimjpeg/raspimjpeg
 if [[ `cat /proc/cmdline |awk -v RS=' ' -F= '/boardrev/ { print $2 }'` == "0x11" ]]; then
-   sed -i 's/^camera_num 0/camera_num 1/g' etc/raspimjpeg/raspimjpeg
+    sed -i 's/^camera_num 0/camera_num 1/g' etc/raspimjpeg/raspimjpeg
 fi
 if [ -e /etc/raspimjpeg ]; then
-   $color_green; echo "Your custom raspimjpg backed up at /etc/raspimjpeg.bak"; $color_reset
-   sudo cp -r /etc/raspimjpeg /etc/raspimjpeg.bak
+    fn_info "Your custom raspimjpg backed up at /etc/raspimjpeg.bak"
+    sudo cp -r /etc/raspimjpeg /etc/raspimjpeg.bak
 fi
 sudo cp -r etc/raspimjpeg/raspimjpeg /etc/
-sudo chmod 644 /etc/raspimjpeg
+sudo chmod u=rw,go=r /etc/raspimjpeg
 if [ ! -e /var/www$rpicamdir/raspimjpeg ]; then
-   sudo ln -s /etc/raspimjpeg /var/www$rpicamdir/raspimjpeg
+    sudo ln -s /etc/raspimjpeg /var/www$rpicamdir/raspimjpeg
 fi
 
 sudo usermod -a -G video www-data
 if [ -e /var/www$rpicamdir/uconfig ]; then
-   sudo chown www-data:www-data /var/www$rpicamdir/uconfig
+    sudo chown www-data:www-data /var/www$rpicamdir/uconfig
 fi
 
+fn_info "Configuration motion detector."
 fn_motion
+
+fn_info "Configuring autostart [(${autostart})]."
 fn_autostart
 
 if [ -e /var/www$rpicamdir/uconfig ]; then
-   sudo chown www-data:www-data /var/www$rpicamdir/uconfig
+    sudo chown www-data:www-data /var/www$rpicamdir/uconfig
 fi
 
 if [ -e /var/www$rpicamdir/schedule.php ]; then
-   sudo rm /var/www$rpicamdir/schedule.php
+    sudo rm /var/www$rpicamdir/schedule.php
 fi
 
 sudo sed -e "s/www/www$rpicamdirEsc/g" www/schedule.php > www/schedule.php.1
@@ -415,5 +279,5 @@ sudo mv www/schedule.php.1 /var/www$rpicamdir/schedule.php
 sudo chown www-data:www-data /var/www$rpicamdir/schedule.php
 
 if [ $# -eq 0 ] || [ "$1" != "q" ]; then
-   fn_reboot
+    fn_start
 fi
