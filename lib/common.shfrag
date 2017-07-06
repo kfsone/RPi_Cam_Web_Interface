@@ -159,6 +159,15 @@ function fn_require_dialog()
 }
 
 
+##############################################################################
+# Set the correct permissions on the config.txt file.
+#
+function fn_set_configfile_perms()
+{
+    sudo chmod ug=rw,o=r "${configfile}" || \
+        fn_abort "Cannot chmod '${configfile}'".
+}
+
 
 ##############################################################################
 # Generate a new config file.
@@ -198,7 +207,7 @@ jpglink="${jpglink}"
 EOL
 
     # Make it 644.
-    chmod ug=rw,o=r -- "${tmp_file}" || fn_abort "Couldn't chmod ${filename}"
+    fn_set_configfile_perms
 
     # Move it into place.
     sudo mv -- "${tmp_file}" "${filename}" || \
