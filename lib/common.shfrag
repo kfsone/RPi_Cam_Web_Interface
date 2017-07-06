@@ -272,8 +272,7 @@ function fn_dialog()
 function fn_ask ()
 {
     local title="${1}"; shift
-    local question="${*}"; shift
-    fn_dialog "$1" --yesno "${question}" 5 48
+    fn_dialog "$1" --yesno "${*}" 5 48
 }
 
 ##############################################################################
