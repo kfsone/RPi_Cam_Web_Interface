@@ -5,13 +5,13 @@
 config.txt
 
 # Log files
-cam.txt
 install.txt
-remove.txt
 installer.txt
+remove.txt
 start.txt
 stop.txt
 update.txt
+cam.txt
 
 # website config
 etc/nginx/sites-available/default
