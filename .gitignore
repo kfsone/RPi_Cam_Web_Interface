@@ -3,10 +3,12 @@
 
 # Generated text files
 install.txt
+installer.txt
 config.txt
-install.txt
 start.txt
+stop.txt
 update.txt
+cam.txt
 
 # website config
 etc/nginx/sites-available/default
