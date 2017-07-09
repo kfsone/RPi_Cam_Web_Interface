@@ -47,19 +47,42 @@ optjpglink="(yes/no)"
 optuser="(blank=nologin)"
 
 
-# Terminal colors
-color_red="tput setaf 1"
-color_green="tput setaf 2"
-color_reset="tput sgr0"
-RED="$($color_red)"
-GREEN="$($color_green)"
-NORMAL="$($color_reset)"
+# Terminal colors:
+
+function stdout_is_tty () { return [ -t 1 ]; }
+
+if stdout_is_tty; then
+
+    color_red="tput setaf 1"
+    color_green="tput setaf 2"
+    color_debug="tput setaf 3"
+    color_warn="tput setaf 5"
+    color_reset="tput sgr0"
+    RED="$($color_red)"
+    GREEN="$($color_green)"
+    NORMAL="$($color_reset)"
+
+else
+
+    # Not writing to a terminal; don't emit color codes.
+    color_red=":"
+    color_green=":"
+    color_debug=":"
+    color_reset=":"
+
+fi
 
 
 # Where we store our autostart config
 autostartfile="/etc/rc.local"
 RC_START="#START RASPIMJPEG SECTION"    # start of section marker
 RC_END="#END RASPIMJPEG SECTION"        # end of section marker
+
+
+# Other locations.
+RASPIMJPEGDIR="/opt/vc/bin"
+MJPEG_DEV="/dev/shm/mjpeg"
+MJPEG_STATUS="${MJPEG_DEV}/status_mjpeg.txt"
 
 
 ##############################################################################
@@ -84,6 +107,21 @@ function fn_enable_debug_log()
 
 
 ##############################################################################
+# Report a message to the debug log. If '${DEBUG}' >= 1, also copy to
+# stderr.
+#
+# \param    $*      Message to print.
+#
+function fn_debug()
+{
+    echo >${BASH_XTRACEFD} "(D) $*"
+    if [ -I "${DEBUG}" -a $DEBUG -ge 1 ]; then
+        echo "$($color_debug)#(D) $*$(color_reset)"
+    fi
+}
+
+
+##############################################################################
 # Report a message as information (prefixed with '#(I)'). Each argument
 # is treated as a separate info line.
 #
@@ -96,6 +134,21 @@ function fn_info()
     done
 }
 
+
+##############################################################################
+# Report a warning: Typically, something off-nominal or a decision we are
+# making that will cause no harm but may warrant the user to take action
+# and re-run the config. For example, not deleting an old file that the
+# user may not realize is in the way. The service might work but if they
+# remove the old file and re-run they may get a newer version.
+#
+# \param   $*      Strings to print.
+#
+function fn_warn()
+{
+    echo >5 "#(W): Warning: ${*}"
+    echo "$($color_warn)#(W): Warning: ${*}$(color_reset)"
+}
 
 ##############################################################################
 # Report a message on stderr and stdout and then exit the current script.
@@ -307,6 +360,56 @@ function fn_debug_showfile()
         fn_dialog "${filename} contains:" --textbox "${filename}" 22 70
     fi
 }
+
+
+##############################################################################
+# Checks whether a file/path name is either absent (does not exist)
+# or meets the shell test you specify (e.g -f for file, -d for dir).
+#
+# \param   pathname     The filesystem entity (dir/file) to test.
+# \param   shtest       '-d' or '-f', etc.
+# \param   reason       If it does not match, abort with this reason.
+#
+function fn_check_missing_or()
+{
+    local shtest="${1}";   shift
+    local pathname="${1}"; shift
+
+    if [ ! -e "${pathname}" ]; then return; fi
+    if [ ! ${shtest} "${pathname}" ]; then
+        error="'${pathname}' already exists but was expecting a"
+        case "${shtest}" in
+            -d) fn_abort "${error} directory." ;;
+            -f) fn_abort "${error} plain text." ;;
+            -l) fn_abort "${error} symbolic link." ;;
+            -p) fn_abort "${error} pipe/fifo." ;;
+            -S) fn_abort "${error} socket." ;;
+            -b) fn_abort "${error} block device." ;;
+            -c) fn_abort "${error} character device." ;;
+            *)  fn_abort "${error} type of file-system object." ;;
+        esac
+    fi
+}
+
+
+##############################################################################
+# Instead of deleting a user's files, rename them to .bak
+#
+# \param   filename    Full pathname of file to check.
+# \param   reason      Explanation of why we would move the file.
+#
+function fn_displace_to_bak()
+{
+    local filename="${1}"; shift
+    local reason="${1}"; shift
+    local bakname="${filename}.bak"
+
+    if [ -e "${filename}" ]; then
+        fn_warn "Displacing '${filename}' to '${bakname}': ${reason}"
+        sudo mv -- "${filename}" "${bakname}" || fn_abort "Couldn't mv file"
+    fi
+}
+
 
 ##############################################################################
 # Stop the service.
