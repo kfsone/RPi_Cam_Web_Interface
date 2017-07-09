@@ -212,14 +212,21 @@ function fn_check_fifo()
 ### Main
 ##############################################################################
 
+# Ensure a slash at the start of rpicamdir.
+rpicamdir="${rpicamdir#/}"
+if [ -n "${rpicamdir}" ]; then
+    rpicamdir="/${rpicamdir}"
+fi
+
+_camdir="/var/www${rpicamdir}"
+fn_debug "_camdir will be ${_camdir}"
+
 # Check any conditions that the user needs to resovle before we can proceed.
 fn_check_preconditions
 
 # Stop the service if it's currently running.
 fn_info "Stopping any running rpicam instance."
 fn_stop
-
-_camdir="/var/www${rpicamdir}"
 
 sudo mkdir -p "${_camdir}/media"
 
