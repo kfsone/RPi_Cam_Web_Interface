@@ -42,7 +42,8 @@ fn_load_config true  # Load or generate the config file.
 
 rpicamdirold="${rpicamdir}"
 if [ -n "${rpicamdirold}" ]; then
-  rpicamdirold="/${rpicamdirold}"
+    # make sure it start with a '/'.
+    rpicamdirold="/${rpicamdirold}"
 fi
 
 # Allow for a quiet install
@@ -166,7 +167,7 @@ EOF
 function fn_check_preconditions ()
 {
     # Check if we need to move files from an old install to a new location.
-    if [ "${rpicamdir}" != "${rpicamdirold}" ]; then
+    if [ ${rpicamdir} != "${rpicamdirold#/}" ]; then
         fn_debug "camdir has changed: ${rpicamdirold} -> ${rpicamdir}"
         if [ -e "/var/www${rpicamdirold}/index.php" ]; then
             if [ ! -e "/var/www/${rpicamdir}/index.php" ]; then
@@ -178,11 +179,13 @@ function fn_check_preconditions ()
                         "Not copying files." 
             fi
         fi
+    else
+        fn_debug "rpicamdir has not changed."
     fi
 
     fn_check_missing_or -d "${MJPEG_DEV}"
-    fn_check_missiong_or -d "/etc/raspimjpeg"
-    fn_check_missing_or -l "/usr/bin/raspimjpeg"
+    fn_check_missing_or -f "/etc/raspimjpeg"
+    fn_check_missing_or -L "/usr/bin/raspimjpeg"
 }
 
 
@@ -266,7 +269,7 @@ if [ ! -e "${MJPEG_STATUS}" ]; then
 fi
 
 # Make sure that 'raspimjpeg' isn't running somewhere.
-sleep 1 ; sudo killall raspimjpeg ; sleep 1
+sleep 1 ; sudo killall >/dev/null 2>&1 raspimjpeg ; sleep 1
 
 sudo chown www-data:www-data "${MJPEG_STATUS}"
 sudo rm -f "${_camdir}/status_mjpeg.txt"
@@ -286,22 +289,23 @@ sed -e "s#www#www${rpicamdir}#" etc/raspimjpeg/raspimjpeg.1 > etc/raspimjpeg/ras
 if [[ `cat /proc/cmdline |awk -v RS=' ' -F= '/boardrev/ { print $2 }'` == "0x11" ]]; then
     sed -i 's/^camera_num 0/camera_num 1/g' etc/raspimjpeg/raspimjpeg
 fi
+fn_displace_to_bak /etc/raspimjpeg
 if [ -e /etc/raspimjpeg ]; then
     fn_info "Your custom raspimjpg backed up at /etc/raspimjpeg.bak"
     sudo cp -r /etc/raspimjpeg /etc/raspimjpeg.bak
 fi
-sudo cp -r etc/raspimjpeg/raspimjpeg /etc/
+sudo cp -p etc/raspimjpeg/raspimjpeg /etc/
 sudo chmod u=rw,go=r /etc/raspimjpeg
 if [ ! -e "${_camdir}/raspimjpeg" ]; then
     sudo ln -s /etc/raspimjpeg "${_camdir}/raspimjpeg"
 fi
 
 sudo usermod -a -G video www-data
-if [ -e "${_camdir}/uconfig ]"; then
+if [ -e "${_camdir}/uconfig" ]; then
     sudo chown www-data:www-data ${_camdir}/uconfig
 fi
 
-fn_info "Configuration motion detector."
+fn_info "Configuring motion detector."
 fn_motion
 
 fn_info "Configuring autostart [(${autostart})]."
