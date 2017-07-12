@@ -136,32 +136,7 @@ function fn_autostart ()
     # Always disable ourselves first.
     fn_autostart_disable
 
-    # If auto-start is enabled, add in our code.
-    if [ "$autostart" == "yes" ]; then
-        if [ -z "$(grep '^exit 0' "${autostartfile}")" ]; then
-            fn_abort "Cannot find 'exit 0' at end of ${autostartfile}"
-        fi
-
-        tempfile=$(tempfile)
-        cat <<EOF >"${tempfile}"
-${RC_START}
-mkdir -p ${MJPEG_DEV}
-chown www-data:www-data ${MJPEG_DEV}
-chmod 777 ${MJPEG_DEV}
-sleep 4;su -c 'raspimjpeg > /dev/null 2>&1 &' www-data
-if [ -e /etc/debian_version ]; then
-    sleep 4;su -c 'php ${_camdir}/schedule.php > /dev/null 2>&1 &' www-data
-else
-    sleep 4;su -s '/bin/bash' -c 'php ${_camdir}/schedule.php > /dev/null 2>&1 &' www-data
-fi
-${RC_END}
-EOF
-
-        # Add our configuration prior to the 'exit 0' line in rc.local.
-        sudo sed -i -e "/^exit [ ]*0/r ${tempFile}" "${autostartfile}"
-
-        rm -f "${tempfile}"
-    fi
+    fn_autostart_enable
 }
 
 function fn_check_preconditions ()
@@ -177,6 +152,7 @@ function fn_check_preconditions ()
                 fn_warn "camdir changed ({$rpicamdirold} -> ${rpicamdir}), " \
                         "but new directory already appears populated. "\
                         "Not copying files." 
+                _move_content=
             fi
         fi
     else
@@ -239,7 +215,7 @@ fi
 # Copy over the web content.
 sudo cp -r www/* "${_camdir}"/
 # Make sure there isn't an 'index.html' file blocking index.php
-fn_displace_to_bak "${_camdir}/index.html" "RPiCam uses index.php".
+fn_displace_to_bak "${_camdir}/index.html" "RPiCam uses index.php."
 
 # Run the relevant webserver config.
 if [ "$webserver" == "apache" ]; then
@@ -296,11 +272,7 @@ sed -e "s#www#www${rpicamdir}#" etc/raspimjpeg/raspimjpeg.1 > etc/raspimjpeg/ras
 if [[ `cat /proc/cmdline |awk -v RS=' ' -F= '/boardrev/ { print $2 }'` == "0x11" ]]; then
     sed -i 's/^camera_num 0/camera_num 1/g' etc/raspimjpeg/raspimjpeg
 fi
-fn_displace_to_bak /etc/raspimjpeg
-if [ -e /etc/raspimjpeg ]; then
-    fn_info "Your custom raspimjpg backed up at /etc/raspimjpeg.bak"
-    sudo cp -r /etc/raspimjpeg /etc/raspimjpeg.bak
-fi
+fn_displace_to_bak /etc/raspimjpeg "Saving your custom raspimjpeg config"
 sudo cp -p etc/raspimjpeg/raspimjpeg /etc/
 sudo chmod u=rw,go=r /etc/raspimjpeg
 if [ ! -e "${_camdir}/raspimjpeg" ]; then

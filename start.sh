@@ -45,9 +45,9 @@ fn_info "Stopping existing instances first."
 fn_stop
 
 fn_info "Starting new RPiCam instance."
-sudo mkdir -p /dev/shm/mjpeg
-sudo chown www-data:www-data /dev/shm/mjpeg
-sudo chmod ugo=rwx /dev/shm/mjpeg
+sudo mkdir -p "${MJPEG_DEV}"
+sudo chown www-data:www-data "${MJPEG_DEV}"
+sudo chmod ugo=rwx "${MJPEG_DEV}"
 
 sleep 1;sudo su -c 'raspimjpeg > /dev/null &' www-data
 

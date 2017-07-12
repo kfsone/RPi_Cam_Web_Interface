@@ -2,10 +2,14 @@
 # This is as shell fragment: use 'source' (or .) to load it.
 #
 
+set -u
+
 
 ##############################################################################
 #### VARIABLES
 ##############################################################################
+
+DEBUG=${DEBUG:-}  # Make sure it's defined for strict mode.
 
 
 # Get our version from config.php
@@ -97,7 +101,7 @@ MJPEG_STATUS="${MJPEG_DEV}/status_mjpeg.txt"
 #
 function fn_enable_debug_log()
 {
-    local filename="${1}"; shift
+    local filename="${1}"; shift  # required
 
     #Debug enable next 3 lines
     exec 5>"${filename}"
@@ -114,7 +118,7 @@ function fn_enable_debug_log()
 function fn_debug()
 {
     echo >&${BASH_XTRACEFD} "(D) $*"
-    if [ -n "${DEBUG}" ]; then
+    if [ -n "${DEBUG:-}" ]; then
         echo >&2 "$($color_debug)#(D) $*$($color_reset)"
     fi
 }
@@ -146,7 +150,7 @@ function fn_info()
 function fn_warn()
 {
     echo >&${BASH_XTRACEFD} "#(W): Warning: ${*}"
-    echo "$($color_warn)#(W): Warning: ${*}$(color_reset)"
+    echo "$($color_warn)#(W): Warning: ${*}$($color_reset)"
 }
 
 ##############################################################################
@@ -176,7 +180,7 @@ function fn_abort()
 #
 function is_installed()
 {
-    local pkg="${1}"; shift
+    local pkg="${1}"; shift  # required
     local result=$(dpkg-query -W -f='${db:Status-Status}' "${pkg}" 2>/dev/null) 
     if [ "${result}" = "installed" ]; then
         return 0
@@ -194,7 +198,7 @@ function is_installed()
 #
 function fn_require_dialog()
 {
-    local fail_on_absent="${1}"; shift
+    local fail_on_absent="${1:-}"  # optional
 
     if is_installed "${DIALOG_PKG}"; then return 0; fi
 
@@ -229,7 +233,7 @@ function fn_set_configfile_perms()
 #
 function fn_generate_config()
 {
-    local filename="${1:-${configfile}}"; shift
+    local filename="${1:-${configfile}}"  # optional
 
     if [ -z "${webport}" ]; then
         fn_abort "Invalid (empty) web port".
@@ -281,7 +285,7 @@ EOL
 #
 function fn_load_config
 {
-    local generate="${1}"; shift
+    local generate="${1:-}"  # optional
 
     # Check if the config file exists.
     if [ ! -e "${configfile}" ]; then
@@ -307,7 +311,7 @@ function fn_load_config
 #
 function fn_dialog()
 {
-    local title="${1}"; shift
+    local title="${1}"; shift  # required
 
     ${DIALOG} --title "${title}" --backtitle "${backtitle}" \
         ${DIALOG_USE_COLORS} ${DIALOG_OPTIONS} \
@@ -323,8 +327,9 @@ function fn_dialog()
 #
 function fn_ask ()
 {
-    local title="${1}"; shift
-    fn_dialog "$1" --yesno "${*}" 5 48
+    local title="${1}";    shift  # required
+    local question="${1}"; shift  # required
+    fn_dialog "${title}" --yesno "${question}" 5 48
 }
 
 ##############################################################################
@@ -336,9 +341,9 @@ function fn_ask ()
 #
 function fn_feedback()
 {
-    local duration="${1}"; shift
-    local title="${1}"; shift
-    local info="${*}"; shift
+    local duration="${1}"; shift  # required
+    local title="${1}";    shift  # required
+    local info="${*}"
 
     # If the dialog package supports it, add colors.
     local prettyinfo="${DIALOG_START_COLORS}${info}${DIALOG_END_COLORS}"
@@ -354,7 +359,7 @@ function fn_feedback()
 #
 function fn_debug_showfile()
 {
-    local filename="${1}"; shift
+    local filename="${1}"; shift  # required
     if [ -n "${filename}" -a "${DEBUG}" == "yes" ]; then
         fn_dialog "${filename} contains:" --textbox "${filename}" 22 70
     fi
@@ -365,14 +370,13 @@ function fn_debug_showfile()
 # Checks whether a file/path name is either absent (does not exist)
 # or meets the shell test you specify (e.g -f for file, -d for dir).
 #
-# \param   pathname     The filesystem entity (dir/file) to test.
 # \param   shtest       '-d' or '-f', etc.
-# \param   reason       If it does not match, abort with this reason.
+# \param   pathname     The filesystem entity (dir/file) to test.
 #
 function fn_check_missing_or()
 {
-    local shtest="${1}";   shift
-    local pathname="${1}"; shift
+    local shtest="${1}";   shift  # required
+    local pathname="${1}"; shift  # required
 
     if [ ! -e "${pathname}" ]; then return; fi
     if [ ! ${shtest} "${pathname}" ]; then
@@ -399,8 +403,8 @@ function fn_check_missing_or()
 #
 function fn_displace_to_bak()
 {
-    local filename="${1}"; shift
-    local reason="${1}"; shift
+    local filename="${1}"; shift  # required
+    local reason="${1}";   shift  # required
     local bakname="${filename}.bak"
 
     if [ -e "${filename}" ]; then
@@ -415,9 +419,8 @@ function fn_displace_to_bak()
 #
 function fn_stop ()
 {
-    sudo killall raspimjpeg 2>/dev/null
-    sudo killall php 2>/dev/null
-    sudo killall motion 2>/dev/null
+    # Try and kill processes, but if the command fails, don't care (|| :)
+    sudo killall -q raspimjpeg php motion 2>/dev/null || :
 }
 
 
@@ -456,12 +459,12 @@ function fn_autostart_disable()
 #
 function fn_autostart_enable()
 {
-    if [ -z $(grep '^exit 0' "${autostartfile}") ]; then
+    if [ -z "$(grep '^exit 0' "${autostartfile}")" ]; then
         fn_abort "Cannot find 'exit 0' at end of ${autostartfile}"
     fi
 
     # Check we're not already enabled.
-    if [ -n $(grep -l "${RC_START}" "${autostartfile}") ]; then
+    if [ -n "$(grep -l "${RC_START}" "${autostartfile}")" ]; then
         fn_abort "Internal:" \
             "tried to enable autostart without first disabling it." \
             "To work around this:" \
@@ -483,8 +486,12 @@ fi
 ${RC_END}
 EOF
 
-    # Add our configuration prior to the 'exit 0' line in rc.local.
-    sudo sed -i -e "/^exit [ ]*0/r ${tempFile}" "${autostartfile}"
+    # Scan the autostart file (rc.local) until we find an 'exit 0' and
+    # then insert the contents of our temp file. This ought to be easy in
+    # sed but it operates on streams not files.
+    sudo perl -i -p \
+        -e "print \`cat ${tempfile}\` if (/^exit\\s+/)" \
+        "${autostartfile}"
 
     rm -f "${tempfile}"
 }

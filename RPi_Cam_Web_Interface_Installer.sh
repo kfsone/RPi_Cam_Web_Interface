@@ -325,9 +325,9 @@ elif ! grep -Fq '#START RASPIMJPEG SECTION' ${autostartfile}; then
   sudo sed -i '/exit 0/d' ${autostartfile}
 sudo bash -c "cat >> ${autostartfile}" << EOF
 #START RASPIMJPEG SECTION
-mkdir -p /dev/shm/mjpeg
-chown www-data:www-data /dev/shm/mjpeg
-chmod 777 /dev/shm/mjpeg
+mkdir -p "${MJPEG_DEV}"
+chown www-data:www-data "${MJPEG_DEV}"
+chmod 777 "${MJPEG_DEV}"
 sleep 4;su -c 'raspimjpeg > /dev/null 2>&1 &' www-data
 if [ -e /etc/debian_version ]; then
   sleep 4;su -c "php $INSTALLDIR/schedule.php > /dev/null 2>&1 &" www-data
@@ -631,9 +631,9 @@ fn_load_config
 case "$1" in
     start)
         FN_STOP
-        sudo mkdir -p /dev/shm/mjpeg
-        sudo chown www-data:www-data /dev/shm/mjpeg
-        sudo chmod 777 /dev/shm/mjpeg
+        sudo mkdir -p "${MJPEG_DEV}"
+        sudo chown www-data:www-data "${MJPEG_DEV}"
+        sudo chmod 777 "${MJPEG_DEV}"
         sleep 1;sudo su -c 'raspimjpeg > /dev/null &' www-data
         if [ -e /etc/debian_version ]; then
             sleep 1;sudo su -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
@@ -1245,9 +1245,9 @@ do
 
              debug)
                 FN_STOP
-                sudo mkdir -p /dev/shm/mjpeg
-                sudo chown www-data:www-data /dev/shm/mjpeg
-                sudo chmod 777 /dev/shm/mjpeg
+                sudo mkdir -p "${MJPEG_DEV}"
+                sudo chown www-data:www-data "${MJPEG_DEV}"
+                sudo chmod 777 "${MJPEG_DEV}"
                 sleep 1;sudo su -c 'raspimjpeg &' www-data
                 if [ -e /etc/debian_version ]; then
                   sleep 1;sudo sudo su -c "php $WWWROOT/$RPICAMDIR/schedule.php &" www-data
@@ -1280,9 +1280,9 @@ do
 
   start)
         FN_STOP
-        sudo mkdir -p /dev/shm/mjpeg
-        sudo chown www-data:www-data /dev/shm/mjpeg
-        sudo chmod 777 /dev/shm/mjpeg
+        sudo mkdir -p "${MJPEG_DEV}"
+        sudo chown www-data:www-data "${MJPEG_DEV}"
+        sudo chmod 777 "${MJPEG_DEV}"
         sleep 1;sudo su -c 'raspimjpeg > /dev/null &' www-data
         if [ -e /etc/debian_version ]; then
           sleep 1;sudo su -c "php $WWWROOT/$RPICAMDIR/schedule.php > /dev/null &" www-data
